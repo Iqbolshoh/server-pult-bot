@@ -1,0 +1,16 @@
+# Secrets and permission policy — never commit
+.env
+.env.*
+
+# Runtime state
+state.db
+state.db-shm
+state.db-wal
+audit.log
+uploads/
+__pycache__/
+*.pyc
+!.env.example
+
+# Environment-specific — ship config.example.json instead
+config.json
