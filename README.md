@@ -21,6 +21,27 @@ once and compare what they do.
 ## Layout
 
 ```
+bot.py               entrypoint: wiring and thread start-up only
+pult/core.py         paths, shared runtime state, formatting helpers
+pult/config.py       config.json + .env, and the local-API key
+pult/db.py           SQLite schema and the meta table
+pult/telegram.py     API client and the durable outbox
+pult/engines.py      the two engines and their per-project contexts
+pult/projects.py     which directories a job may run in
+pult/keyboards.py    inline and reply keyboards
+pult/screens.py      every screen, rendered as HTML
+pult/jobs.py         the queue: one worker per engine, result delivery
+pult/handlers.py     updates -> commands, callbacks, jobs
+pult/localapi.py     loopback helper the agents call through curl
+pult/maintenance.py  periodic disk and database upkeep
+```
+
+Imports run strictly one way down that list, so no module can import a module
+below it and no cycle can form.
+
+## Files
+
+```
 bot.py               the whole bot (python stdlib only, no pip deps)
 config.example.json  template — copy to config.json and edit
 config.json          this machine's settings (untracked)
