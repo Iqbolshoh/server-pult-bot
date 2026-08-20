@@ -614,6 +614,23 @@ def result_menu(job_id, full=False, planned=False):
     return kb(*rows)
 
 
+def resolve_model(name):
+    """(engine, model id) for a name typed after /model.
+
+    Looked up in each engine's own list -- "claude-sonnet-4-6" is an Antigravity
+    model despite the name, so guessing from the prefix got it wrong.
+    """
+    if name in ("-", "default", "odatiy"):
+        return "claude", ""
+    for match in (lambda mid: mid == name, lambda mid: mid.startswith(name)):
+        for eng in ENGINE_ORDER:
+            for mid, _label, _desc, _effort in ENGINES[eng]["models"]:
+                if mid and match(mid):
+                    return eng, mid
+    # Unknown name: the claude CLI accepts aliases we do not list, agy does not.
+    return "claude", name
+
+
 def engine_choice_label():
     return "🤝 Ikkalasi" if CFG["engine"] == "both" else engine_label(CFG["engine"])
 
@@ -1135,10 +1152,8 @@ def handle_command(chat_id, text):
 
     elif cmd == "/model":
         if arg:
-            # A gemini-*/gpt-* name can only mean agy; everything else is Claude's.
-            target = "agy" if any(arg.startswith(p) for p in ("gemini", "gpt")) else "claude"
-            CFG[ENGINES[target]["model_key"]] = (
-                "" if arg in ("-", "default", "odatiy") else arg)
+            target, chosen = resolve_model(arg)
+            CFG[ENGINES[target]["model_key"]] = chosen
             save_config(CFG)
         send(chat_id, model_text(), markup=model_menu(), parse_mode="HTML")
 
@@ -1167,8 +1182,21 @@ def handle_command(chat_id, text):
             send_user_file(chat_id, arg)
 
     elif cmd in ("/cancel", "/stop", "/kill"):
-        target = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
-        send(chat_id, do_cancel(target))
+        target, only_engine = None, None
+        if arg:
+            if arg.isdigit():
+                target = int(arg)
+            else:
+                only_engine, _ = split_engine_prefix(arg + ":")
+                if only_engine in (None, "both"):
+                    only_engine = {"claude": "claude", "agy": "agy",
+                                   "antigravity": "agy"}.get(arg.lower())
+                if only_engine is None:
+                    send(chat_id, "Foydalanish: <code>/stop</code> · "
+                                  "<code>/stop claude</code> · <code>/stop 12</code>",
+                         parse_mode="HTML")
+                    return
+        send(chat_id, do_cancel(target, only_engine))
 
     elif cmd == "/settings":
         send(chat_id, settings_text(), markup=settings_menu(), parse_mode="HTML")
@@ -1357,10 +1385,17 @@ def handle_callback(query):
         screen(f"❌ <b>#{job_id}</b> bekor qilindi. Hech narsa bajarilmadi.", main_menu())
     elif data.startswith("exec:"):
         job_id = int(data.split(":", 1)[1])
-        answer("Bajarilmoqda")
-        start_job(chat_id,
-                  "Yuqorida tuzgan rejangni tasdiqlayman — endi to'liq bajar.",
-                  note=f"reja #{job_id}", mode="auto", approved=True)
+        with db_lock:
+            row = db.execute("SELECT engine FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            answer("Topilmadi")
+        else:
+            answer("Bajarilmoqda")
+            # The plan lives in that engine's conversation and nowhere else.
+            start_job(chat_id,
+                      "Yuqorida tuzgan rejangni tasdiqlayman — endi to'liq bajar.",
+                      note=f"reja #{job_id}", mode="auto", approved=True,
+                      engine=row[0])
     elif data.startswith("cancel:"):
         note = do_cancel(int(data.split(":", 1)[1]))
         answer(note[:180])
@@ -1368,10 +1403,10 @@ def handle_callback(query):
     elif data.startswith("again:"):
         job_id = int(data.split(":", 1)[1])
         with db_lock:
-            row = db.execute("SELECT prompt FROM jobs WHERE id=?", (job_id,)).fetchone()
+            row = db.execute("SELECT prompt,engine FROM jobs WHERE id=?", (job_id,)).fetchone()
         if row:
             answer("Qayta yuborildi")
-            start_job(chat_id, row[0])
+            start_job(chat_id, row[0], engine=row[1])
         else:
             answer("Topilmadi")
     elif data.startswith("full:"):
@@ -1473,13 +1508,13 @@ def limit_text():
 def history_text():
     with db_lock:
         rows = db.execute(
-            "SELECT id, prompt FROM jobs ORDER BY id DESC LIMIT 15"
+            "SELECT id, prompt, engine FROM jobs ORDER BY id DESC LIMIT 15"
         ).fetchall()
     if not rows:
         return "📜 Tarix bo'sh."
     lines = ["📜 <b>So'nggi topshiriqlar</b>", ""]
-    for jid, prompt in rows:
-        lines.append(f"<b>#{jid}</b> · {h(prompt[:110])}")
+    for jid, prompt, engine in rows:
+        lines.append(f"<b>#{jid}</b> {h(engine_label(engine))} · {h(prompt[:100])}")
     lines.append("\nQaytadan yuborish: natija ostidagi 🔁 tugmasi.")
     return "\n".join(lines)
 
@@ -1626,17 +1661,19 @@ def status_text():
 def jobs_text():
     with db_lock:
         rows = db.execute(
-            "SELECT id,state,created,finished,prompt,project FROM jobs ORDER BY id DESC LIMIT 10"
+            "SELECT id,state,created,finished,prompt,project,engine FROM jobs "
+            "ORDER BY id DESC LIMIT 10"
         ).fetchall()
     if not rows:
         return "Hali ish yo'q."
     icons = {"pending": "❓", "queued": "⏳", "running": "▶️",
              "done": "✅", "failed": "❌", "cancelled": "🛑"}
     out = ["📋 <b>Oxirgi ishlar</b>", ""]
-    for jid, state, created, finished, prompt, project in rows:
+    for jid, state, created, finished, prompt, project, engine in rows:
         dur = fmt_duration((finished or time.time()) - created)
         tag = project_label(project or "")
-        out.append(f"{icons.get(state, '•')} <b>#{jid}</b> · {dur} · {h(tag)}")
+        out.append(f"{icons.get(state, '•')} <b>#{jid}</b> {h(engine_label(engine))} · "
+                   f"{dur} · {h(tag)}")
         out.append(f"   {h(prompt[:80])}")
     out.append("\nTo'liq natija: <code>/get N</code>")
     return "\n".join(out)
@@ -2274,6 +2311,12 @@ def housekeeping():
             except OSError:
                 pass
         try:
+            if os.path.getsize(AUDIT_PATH) > 5 * 1024 * 1024:
+                os.replace(AUDIT_PATH, AUDIT_PATH + ".1")
+                log("rotated audit.log")
+        except OSError:
+            pass
+        try:
             with db_lock:
                 db.execute(
                     "DELETE FROM jobs WHERE state IN ('done','failed','cancelled') "
@@ -2286,6 +2329,44 @@ def housekeeping():
         except sqlite3.Error as e:
             log(f"housekeeping: {e}")
         shutdown.wait(6 * 3600)
+
+
+BOT_COMMANDS = [
+    ("start", "Bosh ekran va tugmalar"),
+    ("status", "Hozirgi ish va navbat"),
+    ("jobs", "Oxirgi ishlar"),
+    ("history", "So'nggi topshiriqlar"),
+    ("engine", "Dvigatel: Claude / Antigravity / ikkalasi"),
+    ("both", "Vazifani ikkala dvigatelga birdan"),
+    ("model", "Model tanlash"),
+    ("limit", "Token sarfi"),
+    ("projects", "Loyihani tanlash"),
+    ("cd", "Loyihaga o'tish"),
+    ("ls", "Papka ichi"),
+    ("pwd", "Joriy jild"),
+    ("file", "Faylni Telegramga yuborish"),
+    ("get", "Ish natijasi yoki fayl"),
+    ("sh", "Shell buyrug'i (dvigatelsiz)"),
+    ("server", "Server holati"),
+    ("new", "Kontekstni tozalash"),
+    ("stop", "Ishni to'xtatish"),
+    ("confirm", "Tasdiq so'rashni yoqish/o'chirish"),
+    ("mode", "Claude ruxsat rejimi"),
+    ("settings", "Sozlamalar"),
+    ("menu", "Inline menyu"),
+    ("keyboard", "Pastki tugmalarni tiklash"),
+    ("ping", "Bot tirikmi"),
+    ("restart", "Botni qayta ishga tushirish"),
+    ("help", "Yordam"),
+]
+
+
+def publish_commands():
+    """Tell Telegram the command list so typing '/' offers autocomplete."""
+    ok = api_try("setMyCommands", {"commands": [
+        {"command": name, "description": desc} for name, desc in BOT_COMMANDS
+    ]}, timeout=15)
+    log("command list published" if ok else "could not publish the command list")
 
 
 def main():
@@ -2310,6 +2391,8 @@ def main():
         for uid in CFG["allowed_user_ids"]:
             send(uid, note, markup=main_reply_kb())
             send(uid, "Nima qilamiz?", markup=main_menu())
+
+    threading.Thread(target=publish_commands, daemon=True).start()
 
     threads = [
         threading.Thread(target=poller, name="poller", daemon=True),
