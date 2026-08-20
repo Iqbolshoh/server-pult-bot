@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vexa Pult -- one Telegram bridge for two AI coding engines.
+"""Server Pult -- one Telegram bridge for two AI coding engines.
 
 Runs as a systemd service. Three independent threads:
 
@@ -1898,7 +1898,7 @@ def run_job(job_id, chat_id, prompt, workdir, engine, mode=None, attempt=0):
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
-        env=dict(os.environ, CLAUDE_CODE_ENTRYPOINT="vexa-pult",
+        env=dict(os.environ, CLAUDE_CODE_ENTRYPOINT="server-pult",
                  HOME=os.environ.get("HOME", "/root")),
     )
     with run_lock:
