@@ -216,7 +216,9 @@ def _claude_events(event):
             "text": event.get("result") or "",
             "cost": event.get("total_cost_usd"),
             "turns": event.get("num_turns"),
-            "tokens": (event.get("usage") or {}).get("output_tokens"),
+            # input + output + both cache buckets; nested dicts are skipped.
+            "tokens": sum(v for v in (event.get("usage") or {}).values()
+                          if isinstance(v, int)),
             "error": bool(event.get("is_error")),
         }))
     return out
@@ -1409,30 +1411,61 @@ def projects_text():
 
 
 def limit_text():
-    """Usage over the last week -- the Antigravity bot's /limit, same shape."""
+    """What the limits are actually spent in: tokens, not dollars.
+
+    A Max subscription bills nothing per token, so the only number that means
+    anything here is how many tokens were pushed through.
+    """
+    today = time.strftime("%Y-%m-%d")
     with db_lock:
-        rows = db.execute(
+        per_day = db.execute(
             "SELECT date(created,'unixepoch','localtime') AS day, COUNT(*), "
-            "COALESCE(SUM(cost),0), COALESCE(SUM(turns),0) "
+            "COALESCE(SUM(turns),0), COALESCE(SUM(tokens),0), COUNT(tokens) "
             "FROM jobs WHERE created > ? GROUP BY day ORDER BY day DESC",
             (time.time() - 7 * 86400,),
         ).fetchall()
-    lines = ["📈 <b>Sarflar (7 kun)</b>", ""]
-    if not rows:
-        lines.append("<i>Hali ish yo'q.</i>")
-    for day, count, cost, turns in rows:
-        lines.append(f"<b>{h(day)}</b> · {count} ish · {int(turns)} qadam · ~${cost:.2f}")
-    lines.append("")
+        per_engine = db.execute(
+            "SELECT engine, COUNT(*), COALESCE(SUM(turns),0), COALESCE(SUM(tokens),0) "
+            "FROM jobs WHERE date(created,'unixepoch','localtime')=? GROUP BY engine",
+            (today,),
+        ).fetchall()
+
+    lines = ["📈 <b>Sarflar</b>", "", f"📅 <b>Bugun ({h(today)})</b>"]
+    stats = {eng: (0, 0, 0) for eng in ENGINE_ORDER}
+    for eng, count, turns, tokens in per_engine:
+        stats[eng] = (count, int(turns), int(tokens))
+    day_total = 0
+    for eng in ENGINE_ORDER:
+        count, turns, tokens = stats[eng]
+        day_total += tokens
+        lines.append(f"   {engine_label(eng)} — {count} ish · {turns} qadam · "
+                     f"<b>{fmt_tokens(tokens)}</b> token")
+    lines.append(f"   <b>Jami: {fmt_tokens(day_total)} token</b>")
+
+    lines += ["", "📊 <b>Oxirgi kunlar</b>"]
+    if not per_day:
+        lines.append("   <i>Hali ish yo'q.</i>")
+    for day, count, turns, tokens, measured in per_day:
+        amount = (f"<b>{fmt_tokens(tokens)}</b> token" if measured
+                  else "<i>token yozilmagan</i>")
+        lines.append(f"   <b>{h(day)}</b> · {count} ish · {int(turns)} qadam · {amount}")
+
+    lines += ["", "🧠 <b>Kontekst</b>"]
     for eng in ENGINE_ORDER:
         used, idle = session_usage(eng, current_project())
-        lines.append(f"🧠 {engine_label(eng)} konteksti: {used}/{CFG['session_max_jobs']} ish"
-                     + (f" · {fmt_duration(idle)} oldin" if idle else ""))
+        state = (f"{used}/{CFG['session_max_jobs']} ish · {fmt_duration(idle)} oldin"
+                 if used else "yangi suhbat")
+        lines.append(f"   {engine_label(eng)} — {state}")
+
     lines += [
-        f"🎛 Qadam limiti: {CFG['max_turns']} · ⏰ Ish limiti: {CFG['job_timeout_sec'] // 60} daq",
+        "",
+        f"🎛 Qadam limiti: {CFG['max_turns']} · ⏰ Ish limiti: "
+        f"{CFG['job_timeout_sec'] // 60} daq",
         f"🤖 Claude: <b>{h(CFG['model'] or 'odatiy')}</b> · "
         f"🛸 Antigravity: <b>{h(agy_model_info(CFG['agy_model'])['label'])}</b>",
         "",
-        "<i>Max obuna — pul yechilmaydi, dollar faqat API ekvivalenti.</i>",
+        "<i>Max obuna: pul yechilmaydi, limit tokenda o'lchanadi. Claude raqamiga "
+        "kesh o'qishlari ham kiradi.</i>",
     ]
     return "\n".join(lines)
 
@@ -1552,7 +1585,7 @@ def status_text():
         awaiting = db.execute("SELECT COUNT(*) FROM jobs WHERE state='pending'").fetchone()[0]
         pending = db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
         today = db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(cost),0) FROM jobs WHERE created > ?",
+            "SELECT COUNT(*), COALESCE(SUM(tokens),0) FROM jobs WHERE created > ?",
             (time.time() - 86400,),
         ).fetchone()
     lines = ["📊 <b>Holat</b>", ""]
@@ -1584,8 +1617,8 @@ def status_text():
                          f"{fmt_duration(idle)} oldin")
         else:
             lines.append(f"🧠 {engine_label(eng)}: yangi suhbat")
-    lines.append(f"📅 24 soatda: {today[0]} ta ish · ~${today[1]:.2f} API ekvivalenti "
-                 f"(Max obuna — to'lov yo'q)")
+    lines.append(f"📅 24 soatda: {today[0]} ta ish · "
+                 f"{fmt_tokens(today[1])} token")
     lines.append(f"⏱ Bot uptime: {fmt_duration(time.time() - START_TIME)}")
     return "\n".join(lines)
 
@@ -1650,7 +1683,7 @@ def server_text():
         "<b>Xizmatlar</b>",
     ]
     lines += ["  " + h(s) for s in services] or ["  —"]
-    bots = sh("supervisorctl status claude-tgbot antigravity-bot 2>/dev/null | awk '{print $1\": \"$2}'", "")
+    bots = sh("supervisorctl status server-pult-bot 2>/dev/null | awk '{print $1\": \"$2}'", "")
     if bots:
         lines.append("")
         lines.append("<b>Botlar (supervisor)</b>")
@@ -1680,6 +1713,16 @@ def run_shell(chat_id, command):
         out = out[:3000] + "\n… (qisqartirildi)"
     send(chat_id, f"{status} <code>{h(command[:120])}</code>\n<pre>{h(out)}</pre>",
          parse_mode="HTML")
+
+
+def fmt_tokens(count):
+    """1234 -> '1.2K', 4500000 -> '4.5M'. Limits are counted in tokens, not money."""
+    count = int(count or 0)
+    if count >= 999_500:
+        return f"{count / 1_000_000:.1f}M".replace(".0M", "M")
+    if count >= 1_000:
+        return f"{count / 1_000:.1f}K".replace(".0K", "K")
+    return str(count)
 
 
 def fmt_duration(seconds):
@@ -1920,20 +1963,18 @@ def run_job(job_id, chat_id, prompt, workdir, engine, mode=None, attempt=0):
         return
 
     finish_job(job_id, "done", final_text, proc.returncode, cost, turns, tokens)
-    deliver_result(chat_id, job_id, final_text, elapsed, progress, cost, turns, mode, engine)
+    deliver_result(chat_id, job_id, final_text, elapsed, progress, turns, tokens, mode, engine)
     log(f"job #{job_id} [{engine}] done in {elapsed}")
 
 
-def deliver_result(chat_id, job_id, text, elapsed, progress, cost, turns, mode=None,
+def deliver_result(chat_id, job_id, text, elapsed, progress, turns, tokens, mode=None,
                    engine="claude"):
     planned = mode == "plan"
     meta = [f"⏱ {elapsed}", engine_label(engine)]
     if turns:
         meta.append(f"🔄 {turns}")
-    if cost:
-        # Max obunada bu pul emas — shunchaki sarflangan tokenlarning API narxidagi
-        # ekvivalenti. Hisobdan hech narsa yechilmaydi, shuning uchun 💵 emas 📊.
-        meta.append(f"📊 ~${cost:.2f}")
+    if tokens:
+        meta.append(f"🧮 {fmt_tokens(tokens)} token")
     header = ("🧭 <b>#%d</b> REJA · " % job_id if planned else f"✅ <b>#{job_id}</b> · ")
     header += " · ".join(meta)
     tools = progress.summary()
