@@ -9,10 +9,10 @@ import threading
 from pult.core import CONFIG_PATH, log, shutdown, version
 from pult.config import CFG, config_problems, ensure_pairing_code, save_config
 from pult.i18n import available_languages, t
-from pult.telegram import api_try, send, sender
+from pult.telegram import api_try, close_connections, send, sender
 from pult.engines import ENGINE_ORDER, refresh_catalogue
 from pult.projects import current_project
-from pult.keyboards import main_menu, main_reply_kb
+from pult.keyboards import main_reply_kb
 from pult.jobs import do_cancel, recover_interrupted_jobs, worker
 from pult.handlers import poller
 from pult.localapi import local_api_server
@@ -85,7 +85,6 @@ def main():
             note += " " + t("boot.requeued", count=requeued)
         for uid in CFG["allowed_user_ids"]:
             send(uid, note, markup=main_reply_kb(), parse_mode="HTML")
-            send(uid, t("menu.prompt"), markup=main_menu(), parse_mode="HTML")
 
     threading.Thread(target=publish_commands, daemon=True).start()
     threading.Thread(target=refresh_models, name="catalogue", daemon=True).start()
@@ -105,6 +104,7 @@ def main():
         t_.start()
     while not shutdown.is_set():
         shutdown.wait(1)
+    close_connections()
     log("stopped")
 
 

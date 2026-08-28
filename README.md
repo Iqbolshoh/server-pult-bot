@@ -91,6 +91,13 @@ an ordinary failure never walks the chain — otherwise one broken prompt would 
 every subscription you own. The chain is off until you turn it on, because a hop
 spends your *other* account.
 
+## Buttons
+
+The bottom keyboard is the menu. It is always on screen and carries the eleven
+things worth one tap, so no message repeats it: a screen that needs no buttons of
+its own is sent with none. Inline buttons are for what belongs to *that* message
+— approve or drop a task, stop a running job, pick a model, flip a setting.
+
 ## Commands
 
 ```
@@ -110,7 +117,7 @@ pult/core.py         paths, shared runtime state, formatting helpers
 pult/config.py       config.json + .env, and the local-API key
 pult/i18n.py         locales/<lang>.json -- everything a human reads
 pult/db.py           SQLite schema and the meta table
-pult/telegram.py     API client and the durable outbox
+pult/telegram.py     API client, IPv4-first pooled transport, durable outbox
 pult/engines.py      the engines: flags, event dialects, catalogue, limits
 pult/failover.py     the chain: cooldowns, hops, the handover prompt
 pult/projects.py     which directories a job may run in

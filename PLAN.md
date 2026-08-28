@@ -28,8 +28,8 @@ is what makes that possible and what makes it hard to copy.
 
 | | | today (evening) |
 |---|---|---|
-| Code | 2,483 lines, 14 files, Python 3.14, **stdlib only — no pip dependencies** | 3,511 lines, 16 modules + 320×3 locale strings |
-| Tests | none | **122**, plain `unittest`, fixtures recorded from both CLIs, CI on push |
+| Code | 2,483 lines, 14 files, Python 3.14, **stdlib only — no pip dependencies** | 3,718 lines, 16 modules + 321×3 locale strings |
+| Tests | none | **148**, plain `unittest`, fixtures recorded from both CLIs, CI on push |
 | Engines | `claude` 2.1.250 · `agy` 1.1.19 | `claude` 2.1.251 · `agy` 1.1.22 |
 | Process | supervisor `server-pult-bot`, `autorestart=true` | unchanged, plus a systemd path in `install.sh` |
 | Repo | 5 commits, latest `0d9edcb` | + this work |
@@ -425,6 +425,57 @@ by tests rather than by discipline:
   an ordinary failure, exactly as §4.4 argues.
 - **`--agent`, `--json-schema`, MCP.** Real flags, no demand: nothing in the bot
   consumes structured output, and a buyer configures MCP in their own CLI.
+
+**2026-08-28 (late) — "the bot is slow": found, measured, fixed.** The operator
+reported slowness, errors, and one row of buttons too many. All three had a
+cause; none of them was the model.
+
+**The slowness was the network, and it was the same 20 seconds every time.**
+`api.telegram.org` resolves to both an IPv6 and an IPv4 address, `getaddrinfo`
+returns the IPv6 one first, and that is the one Python connected to. On this
+uplink the IPv6 TLS handshake **does not complete about one time in seven**
+(2 of 14 in a sample; IPv4 scored 0 of 14) — and a stalled handshake costs the
+whole request timeout rather than failing fast. Every Telegram call also opened a
+fresh connection, so every call rolled that dice again.
+
+| | 20 × `getMe`, back to back |
+|---|---|
+| Before | median **48 ms**, max **20,062 ms**, total **20.9 s**, one stall in twenty |
+| After | median **65 ms**, max **71 ms**, total **1.3 s**, no stalls |
+
+The median is unchanged — the fix is not that calls got faster, it is that they
+stopped *stopping*. `telegram.py` now owns its transport: `open_socket()` tries
+IPv4 first and falls back to IPv6 only when IPv4 is the one that fails, and
+connections are pooled and reused instead of being handshaken per call. 13 tests
+in `tests/test_transport.py` pin the address order, the pool, the retry-once rule
+for a keep-alive the server dropped, and the error mapping.
+
+**Two errors, both visible in the log.** `answerCallbackQuery failed` appeared
+seven times, twice for the same press — because the guard against answering a
+query twice was `if answered.is_set(): ... answered.set()`, which is not atomic,
+so the 1.5-second fallback timer and the branch doing the work could both get
+through. It is a lock now, the timer is cancelled once the real answer goes out,
+and a query Telegram has already retired (a button pressed while the bot was
+restarting) no longer earns a log line, because nothing is wrong and nothing can
+be done. Separately, a queued job sat up to a second waiting for its worker's
+next poll tick; `core.queue_ready(engine)` wakes the right worker the moment the
+row is committed.
+
+**The extra row of buttons.** The bottom keyboard carries eleven entries and is
+always on screen. Under every message the bot *also* drew an inline copy of it,
+and every screen ended in a button labelled "⬅️ Menyu" — which is what the
+operator was looking at when he asked for it to go. `main_menu()` and
+`back_menu()` are deleted. Nothing inline repeats a bottom-keyboard label any
+more: `/status`, `/jobs`, `/server`, `/help`, `/limit` and `/history` answer with
+no buttons at all, a result card keeps only its job-specific actions, a running
+job keeps only ⏹, and `/settings` shows the toggles and dials that have **no**
+bottom key — the engine, model and project shortcuts it used to duplicate are one
+tap away below. One "back" button survives, on the screens that hang off
+`/settings`, and it is now labelled *Orqaga / Back / Назад* and points at
+settings. `tests/test_keyboards.py` fails if any of that creeps back, and also
+fails on a `callback_data` no branch handles.
+
+148 tests, all passing. Live under supervisor since 19:04.
 
 ---
 

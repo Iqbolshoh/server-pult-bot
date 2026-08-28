@@ -33,6 +33,16 @@ PREVIEW_CHARS = 700
 MEDIA_GROUP_WINDOW = 90  # seconds an album stays open for extra photos
 shutdown = threading.Event()
 outbox_ready = threading.Event()
+_queue_events = {}
+_queue_events_lock = threading.Lock()
+def queue_ready(engine):
+    """The event that engine's worker sleeps on.
+
+    Without it a worker only notices a new job on its next poll tick, so every
+    task paid up to a second of dead time before the CLI was even started.
+    """
+    with _queue_events_lock:
+        return _queue_events.setdefault(engine, threading.Event())
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 def audit(line):

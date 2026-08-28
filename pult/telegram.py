@@ -1,14 +1,17 @@
 """Telegram API client and the durable outbox."""
 
 import html
+import http.client
 import json
 import mimetypes
 import os
 import re
 import shutil
+import socket
+import ssl
+import threading
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 import uuid
 
 from .core import TELEGRAM_MAX_CHARS, UPLOAD_DIR, log, outbox_ready, shutdown
@@ -56,31 +59,140 @@ class TelegramError(RuntimeError):
         self.code = code
         self.description = description
         self.retry_after = retry_after
-def _request(req, timeout):
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.load(resp)
-    except urllib.error.HTTPError as e:
-        body = {}
+# ---------------------------------------------------------------------------
+# HTTPS transport
+#
+# Two choices here are not the obvious ones, and both were measured on this
+# server rather than guessed:
+#
+# 1. IPv4 first. api.telegram.org resolves to both families and getaddrinfo puts
+#    the IPv6 address first, so that is the one Python picks. On this uplink
+#    roughly one IPv6 TLS handshake in seven never completes (2 of 14 in a
+#    sample; IPv4 scored 0 of 14) -- and a stalled handshake costs the whole
+#    request timeout, so a single button press could sit spinning for twenty
+#    seconds. IPv6 is still tried, but only when IPv4 is the one that fails.
+#
+# 2. Connections are kept and reused. A fresh TCP+TLS handshake costs 30-50 ms
+#    before Telegram has read a byte; the same call on an open connection
+#    answers in 15-25 ms. Every progress tick, screen edit and button press is
+#    one call, so the handshake was most of the wait.
+# ---------------------------------------------------------------------------
+
+HOST = urllib.parse.urlsplit(API_BASE).hostname or "api.telegram.org"
+API_PATH = urllib.parse.urlsplit(API_BASE).path
+FILE_HOST = urllib.parse.urlsplit(FILE_BASE).hostname or HOST
+FILE_PATH = urllib.parse.urlsplit(FILE_BASE).path
+HANDSHAKE_TIMEOUT = 10   # per address, so a dead route is abandoned quickly
+IDLE_TTL = 55            # Telegram hangs up on idle sockets; do not hand out a stale one
+POOL_SIZE = 4
+
+_ssl_context = ssl.create_default_context()
+def open_socket(host, timeout, families=(socket.AF_INET, socket.AF_INET6)):
+    """A connected TLS socket, trying each family in turn. Raises OSError."""
+    problem = None
+    for family in families:
         try:
-            body = json.loads(e.read().decode())
-        except Exception:
-            pass
+            addresses = socket.getaddrinfo(host, 443, family, socket.SOCK_STREAM)
+        except OSError as e:
+            problem = e
+            continue
+        for af, kind, proto, _canonical, address in addresses:
+            sock = socket.socket(af, kind, proto)
+            sock.settimeout(min(timeout or HANDSHAKE_TIMEOUT, HANDSHAKE_TIMEOUT))
+            try:
+                sock.connect(address)
+                wrapped = _ssl_context.wrap_socket(sock, server_hostname=host)
+            except OSError as e:
+                sock.close()
+                problem = e
+                continue
+            wrapped.settimeout(timeout)
+            return wrapped
+    raise OSError(f"cannot reach {host}: {problem or 'no address'}")
+class Connection(http.client.HTTPSConnection):
+    """HTTPS to Telegram, on a socket chosen by open_socket and then kept open."""
+
+    def connect(self):
+        self.sock = open_socket(self.host, self.timeout)
+_pool = []          # [(connection, host, idle since)] -- newest last
+_pool_lock = threading.Lock()
+def take_connection(host, timeout):
+    """An idle pooled connection, or a new one. Returns (connection, reused)."""
+    now = time.time()
+    with _pool_lock:
+        for i in range(len(_pool) - 1, -1, -1):
+            conn, conn_host, idle_since = _pool[i]
+            if conn_host != host:
+                continue
+            _pool.pop(i)
+            if now - idle_since > IDLE_TTL:
+                conn.close()
+                continue
+            conn.timeout = timeout
+            if conn.sock is not None:
+                conn.sock.settimeout(timeout)
+            return conn, True
+    return Connection(host, timeout=timeout), False
+def give_connection(conn, host):
+    with _pool_lock:
+        if len(_pool) >= POOL_SIZE:
+            conn.close()
+            return
+        _pool.append((conn, host, time.time()))
+def close_connections():
+    """Drop every pooled socket -- used on shutdown and by the tests."""
+    with _pool_lock:
+        for conn, _host, _idle in _pool:
+            conn.close()
+        _pool.clear()
+def http_call(host, method, path, body, headers, timeout):
+    """One request over a pooled connection. Returns (status, body bytes)."""
+    for attempt in (0, 1):
+        conn, reused = take_connection(host, timeout)
+        try:
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            status, payload = resp.status, resp.read()
+        except (http.client.HTTPException, OSError):
+            conn.close()
+            # A pooled socket Telegram closed while it sat idle fails on the
+            # first write, before the request was ever read -- safe to repeat.
+            # A fresh connection failing is a real fault and must not be hidden.
+            if reused and attempt == 0:
+                continue
+            raise
+        give_connection(conn, host)
+        return status, payload
+class TelegramError(RuntimeError):
+    def __init__(self, code, description, retry_after=None):
+        super().__init__(f"HTTP {code}: {description}")
+        self.code = code
+        self.description = description
+        self.retry_after = retry_after
+def _request(host, path, body, headers, timeout):
+    try:
+        status, payload = http_call(host, "POST", path, body, headers, timeout)
+    except (http.client.HTTPException, OSError) as e:
+        # Code 0 marks a transport fault: the sender retries those forever,
+        # while a 4xx from Telegram itself is a message it will never accept.
+        raise TelegramError(0, str(e) or type(e).__name__) from None
+    try:
+        parsed = json.loads(payload)
+    except ValueError:
         raise TelegramError(
-            e.code,
-            body.get("description", str(e)),
-            (body.get("parameters") or {}).get("retry_after"),
-        ) from None
-    if not payload.get("ok"):
-        raise TelegramError(0, str(payload))
-    return payload["result"]
+            status, http.client.responses.get(status, "unexpected reply")) from None
+    if not parsed.get("ok"):
+        raise TelegramError(
+            status if status >= 400 else 0,
+            parsed.get("description", str(parsed)),
+            (parsed.get("parameters") or {}).get("retry_after"),
+        )
+    return parsed["result"]
 def api_call(method, params=None, timeout=30):
     """Call the Telegram API. Raises TelegramError on failure."""
-    data = json.dumps(params or {}).encode("utf-8")
-    req = urllib.request.Request(
-        API_BASE + method, data=data, headers={"Content-Type": "application/json"}
-    )
-    return _request(req, timeout)
+    body = json.dumps(params or {}).encode("utf-8")
+    return _request(HOST, API_PATH + method, body,
+                    {"Content-Type": "application/json"}, timeout)
 def api_try(method, params=None, timeout=20):
     """Best-effort call: returns None instead of raising. For live UI updates."""
     try:
@@ -104,12 +216,8 @@ def api_upload(method, fields, file_field, filename, blob, timeout=180):
     ).encode("utf-8")
     body += blob
     body += f"\r\n--{boundary}--\r\n".encode("utf-8")
-    req = urllib.request.Request(
-        API_BASE + method,
-        data=bytes(body),
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-    )
-    return _request(req, timeout)
+    return _request(HOST, API_PATH + method, bytes(body),
+                    {"Content-Type": f"multipart/form-data; boundary={boundary}"}, timeout)
 def download_telegram_file(file_id, suggested_name):
     """Pull a photo/document the user sent into the uploads directory."""
     info = api_call("getFile", {"file_id": file_id})
@@ -120,8 +228,18 @@ def download_telegram_file(file_id, suggested_name):
     ext = os.path.splitext(remote)[1] or os.path.splitext(suggested_name)[1] or ".bin"
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.splitext(suggested_name)[0])[:40] or "file"
     local = os.path.join(UPLOAD_DIR, f"{time.strftime('%Y%m%d-%H%M%S')}-{safe}{ext}")
-    with urllib.request.urlopen(FILE_BASE + remote, timeout=120) as resp, open(local, "wb") as out:
-        shutil.copyfileobj(resp, out)
+    # Not pooled: a download holds the socket for as long as the file takes, and
+    # there is nothing to gain from keeping it afterwards.
+    conn = Connection(FILE_HOST, timeout=120)
+    try:
+        conn.request("GET", FILE_PATH + remote)
+        resp = conn.getresponse()
+        if resp.status != 200:
+            raise RuntimeError(f"download failed: HTTP {resp.status}")
+        with open(local, "wb") as out:
+            shutil.copyfileobj(resp, out)
+    finally:
+        conn.close()
     return local
 def sender():
     backoff = 1

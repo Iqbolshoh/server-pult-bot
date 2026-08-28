@@ -10,17 +10,17 @@ from .core import (MEDIA_GROUP_WINDOW, POLL_TIMEOUT, SOURCE_DIR, START_TIME, fmt
 from .config import CFG, save_config
 from .i18n import available_languages, language_name, reset_cache, t
 from .db import db, db_lock, meta_get, meta_set
-from .telegram import api_call, api_try, download_telegram_file, send
+from .telegram import TelegramError, api_call, api_try, download_telegram_file, send
 from .engines import (ENGINES, ENGINE_ORDER, EFFORTS, clear_all_sessions, clear_cooldown,
                       engine_choice_label, engine_label, engine_model_label, other_engine,
                       refresh_catalogue, resolve_model, set_engine_model)
 from . import failover
 from .projects import current_project, list_projects, project_label
-from .keyboards import (back_menu, doctor_menu, effort_menu, engine_menu, fallback_menu,
-                        job_menu, label_commands, language_menu, main_menu, main_reply_kb,
-                        model_menu, onboarding_confirm_menu, onboarding_engine_menu,
-                        onboarding_language_menu, onboarding_projects_menu, projects_menu,
-                        settings_menu)
+from .keyboards import (back_to_settings, doctor_menu, effort_menu, engine_menu,
+                        fallback_menu, job_menu, label_commands, language_menu,
+                        main_reply_kb, model_menu, onboarding_confirm_menu,
+                        onboarding_engine_menu, onboarding_language_menu,
+                        onboarding_projects_menu, projects_menu, settings_menu)
 from .screens import (doctor_text, effort_text, engine_text, fallback_text, help_text,
                       history_text, jobs_text, language_text, limit_text, ls_text, model_text,
                       projects_text, server_text, settings_text, start_text, status_text)
@@ -184,7 +184,7 @@ def finish_onboarding(chat_id):
     send(chat_id, t("onboard.done", project=h(project_label(current_project())),
                     engine=h(engine_choice_label())),
          markup=main_reply_kb(), parse_mode="HTML")
-    send(chat_id, help_text(), markup=main_menu(), parse_mode="HTML")
+    send(chat_id, help_text(), parse_mode="HTML")
 def handle_command(chat_id, text):
     parts = text.split()
     cmd = parts[0].lower().split("@")[0]
@@ -194,19 +194,16 @@ def handle_command(chat_id, text):
         send(chat_id, start_text(), markup=main_reply_kb(), parse_mode="HTML")
         if not CFG["onboarded"]:
             begin_onboarding(chat_id)
-        else:
-            send(chat_id, t("menu.prompt"), markup=main_menu(), parse_mode="HTML")
 
     elif cmd in ("/setup", "/onboard"):
         begin_onboarding(chat_id)
 
     elif cmd == "/help":
-        send(chat_id, help_text(), markup=back_menu(), parse_mode="HTML")
+        send(chat_id, help_text(), parse_mode="HTML")
 
-    elif cmd == "/menu":
-        send(chat_id, t("menu.prompt"), markup=main_menu(), parse_mode="HTML")
-
-    elif cmd == "/keyboard":
+    elif cmd in ("/menu", "/keyboard"):
+        # One menu, not two. The bottom keyboard is it; this re-sends it for a
+        # client that lost it, and there is no inline twin to fall back on.
         send(chat_id, t("keyboard.restored"), markup=main_reply_kb(), parse_mode="HTML")
 
     elif cmd == "/ping":
@@ -216,17 +213,16 @@ def handle_command(chat_id, text):
     elif cmd == "/new":
         clear_all_sessions(current_project())
         send(chat_id, t("session.cleared", project=h(project_label(current_project()))),
-             markup=main_menu(), parse_mode="HTML")
+             parse_mode="HTML")
 
     elif cmd == "/status":
-        send(chat_id, status_text(), markup=back_menu(), parse_mode="HTML")
+        send(chat_id, status_text(), parse_mode="HTML")
 
     elif cmd == "/jobs":
-        send(chat_id, jobs_text(), markup=back_menu(), parse_mode="HTML")
+        send(chat_id, jobs_text(), parse_mode="HTML")
 
     elif cmd in ("/server", "/sys"):
-        in_background(lambda: send(chat_id, server_text(), markup=back_menu(),
-                                   parse_mode="HTML"))
+        in_background(lambda: send(chat_id, server_text(), parse_mode="HTML"))
 
     elif cmd == "/doctor":
         in_background(lambda: send(chat_id, doctor_text(), markup=doctor_menu(),
@@ -342,10 +338,10 @@ def handle_command(chat_id, text):
             start_job(chat_id, arg, engine="both")
 
     elif cmd == "/limit":
-        send(chat_id, limit_text(), markup=back_menu(), parse_mode="HTML")
+        send(chat_id, limit_text(), parse_mode="HTML")
 
     elif cmd == "/history":
-        send(chat_id, history_text(), markup=back_menu(), parse_mode="HTML")
+        send(chat_id, history_text(), parse_mode="HTML")
 
     elif cmd == "/pwd":
         send(chat_id, t("pwd", project=h(project_label(current_project())),
@@ -369,8 +365,7 @@ def handle_command(chat_id, text):
         threading.Timer(2.0, lambda: (shutdown.set(), do_cancel())).start()
 
     else:
-        send(chat_id, t("error.unknown_command", cmd=h(cmd)), markup=main_menu(),
-             parse_mode="HTML")
+        send(chat_id, t("error.unknown_command", cmd=h(cmd)), parse_mode="HTML")
 def set_language(code):
     CFG["language"] = code
     save_config()
@@ -413,17 +408,32 @@ def handle_callback(query):
     message_id = msg.get("message_id")
 
     # The spinner only stops when answerCallbackQuery arrives, and the query goes
-    # stale in seconds -- so answer before doing any work.
-    answered = threading.Event()
+    # stale in seconds -- so answer before doing any work, and answer exactly
+    # once. Telegram rejects the second answer to the same query, so the guard
+    # has to be a lock and not a check-then-set on an Event: the timer below and
+    # the branch that does the work would otherwise both get through.
+    answer_lock = threading.Lock()
+    answered = [False]
+    fallback = None
 
     def answer(note=""):
-        if answered.is_set():
-            return
-        answered.set()
-        ok = api_try("answerCallbackQuery",
+        with answer_lock:
+            if answered[0]:
+                return
+            answered[0] = True
+        if fallback is not None:
+            fallback.cancel()
+        try:
+            api_call("answerCallbackQuery",
                      {"callback_query_id": query["id"], "text": note}, timeout=8)
-        if ok is None:
-            log(f"answerCallbackQuery failed for {data!r}")
+        except TelegramError as e:
+            # A button pressed while the bot was down arrives with a query id
+            # Telegram has already retired. Nothing is wrong and nothing can be
+            # done about it, so it does not deserve a line in the log.
+            if "too old" not in (e.description or "").lower():
+                log(f"answerCallbackQuery failed for {data!r}: {e.description}")
+        except Exception as e:
+            log(f"answerCallbackQuery failed for {data!r}: {e}")
 
     if not authorised(user_id) or chat_id != user_id:
         answer(t("error.forbidden"))
@@ -431,33 +441,38 @@ def handle_callback(query):
 
     # Even on a slow uplink the spinner must not hang: if nothing has answered in
     # 1.5 seconds, send an empty answer.
-    threading.Timer(1.5, answer).start()
+    fallback = threading.Timer(1.5, answer)
+    fallback.daemon = True
+    fallback.start()
 
     def screen(text, markup):
+        # An edit that leaves reply_markup out keeps the buttons the message
+        # already had, so a screen with no buttons has to say so with an empty
+        # keyboard rather than with None.
         api_try("editMessageText", {
             "chat_id": chat_id, "message_id": message_id, "text": text,
-            "parse_mode": "HTML", "reply_markup": markup,
+            "parse_mode": "HTML", "reply_markup": markup or {"inline_keyboard": []},
             "link_preview_options": {"is_disabled": True},
         })
 
     if data == "menu":
         answer()
-        screen(t("menu.prompt"), main_menu())
+        send(chat_id, t("keyboard.restored"), markup=main_reply_kb(), parse_mode="HTML")
     elif data == "status":
         answer()
-        screen(status_text(), back_menu())
+        screen(status_text(), None)
     elif data == "server":
         answer(t("wait.measuring"))
-        screen(server_text(), back_menu())
+        screen(server_text(), None)
     elif data == "doctor":
         answer(t("wait.checking"))
         screen(doctor_text(), doctor_menu())
     elif data == "jobs":
         answer()
-        screen(jobs_text(), back_menu())
+        screen(jobs_text(), None)
     elif data == "help":
         answer()
-        screen(help_text(), back_menu())
+        screen(help_text(), None)
     elif data == "settings":
         answer()
         screen(settings_text(), settings_menu())
@@ -482,7 +497,7 @@ def handle_callback(query):
         screen(model_text(), model_menu())
     elif data == "limit":
         answer()
-        screen(limit_text(), back_menu())
+        screen(limit_text(), back_to_settings())
     elif data == "effort":
         answer()
         screen(effort_text(), effort_menu())
@@ -535,7 +550,7 @@ def handle_callback(query):
     elif data == "new":
         clear_all_sessions(current_project())
         answer(t("session.cleared_short"))
-        screen(t("session.cleared", project=h(project_label(current_project()))), main_menu())
+        screen(t("session.cleared", project=h(project_label(current_project()))), None)
     elif data.startswith("cd:"):
         projects = list_projects()
         idx = int(data.split(":", 1)[1])
@@ -576,7 +591,7 @@ def handle_callback(query):
             )
             db.commit()
         answer(t("word.cancelled"))
-        screen(t("job.dropped", id=job_id), main_menu())
+        screen(t("job.dropped", id=job_id), None)
     elif data.startswith("exec:"):
         job_id = int(data.split(":", 1)[1])
         with db_lock:
@@ -591,7 +606,7 @@ def handle_callback(query):
     elif data.startswith("cancel:"):
         note = do_cancel(int(data.split(":", 1)[1]))
         answer(note[:180])
-        screen(note, main_menu())
+        screen(note, None)
     elif data.startswith("other:"):
         job_id = int(data.split(":", 1)[1])
         with db_lock:

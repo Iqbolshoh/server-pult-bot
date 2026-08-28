@@ -39,20 +39,17 @@ def kb(*rows):
             [{"text": text, "callback_data": data} for text, data in row] for row in rows
         ]
     }
-def main_menu():
-    return kb(
-        [(t("btn.status"), "status"), (t("btn.server"), "server")],
-        [(t("btn.projects"), "projects"), (t("btn.jobs"), "jobs")],
-        [(t("btn.engine"), "engine"), (t("btn.model"), "model")],
-        [(t("btn.limit"), "limit"), (t("btn.new"), "new")],
-        [(t("btn.settings"), "settings")],
-        [(t("btn.help"), "help")],
-    )
-def back_menu():
-    return kb([(t("btn.back"), "menu")])
+# There is deliberately no inline copy of the menu here. The bottom keyboard is
+# always on screen and already carries these eleven entries, so an inline twin
+# under every message was one row of buttons that could only repeat what the
+# operator could already see. A "back" button now survives in one place only:
+# the screens that hang off /settings, where it leads to a real parent.
+def back_to_settings():
+    return kb([(t("btn.back"), "settings")])
 def job_menu(job_id):
-    """Buttons on a running job. The engine is already named in the banner above."""
-    return kb([(t("btn.stop_job"), f"cancel:{job_id}"), (t("btn.status"), "status")])
+    """The one button a running job needs. The engine is named in the banner
+    above it, and everything else is a tap away on the bottom keyboard."""
+    return kb([(t("btn.stop_job"), f"cancel:{job_id}")])
 def confirm_menu(job_id):
     """Shown before anything runs, when confirm_before_run is on."""
     return kb(
@@ -67,8 +64,7 @@ def result_menu(job_id, full=False, planned=False, engine=None):
     if other:
         # Same task, other engine -- the cheapest way to compare the two.
         rows.append([(t("btn.try_other", engine=engine_label(other)), f"other:{job_id}")])
-    row = [(t("btn.again"), f"again:{job_id}"), (t("btn.new"), "new"),
-           (t("btn.back"), "menu")]
+    row = [(t("btn.again"), f"again:{job_id}")]
     if full:
         row.insert(0, (t("btn.full_text"), f"full:{job_id}"))
     rows.append(row)
@@ -80,7 +76,6 @@ def engine_menu():
         rows.append([(f"{mark}{ENGINES[eng]['label']}", f"setengine:{eng}")])
     mark = "✅ " if CFG["engine"] == "both" else ""
     rows.append([(f"{mark}{t('engine.both')}", "setengine:both")])
-    rows.append([(t("btn.back"), "menu")])
     return kb(*rows)
 def model_menu():
     rows = []
@@ -96,7 +91,7 @@ def model_menu():
         if row:
             rows.append(row)
     rows.append([(t("btn.refresh_models"), "models_refresh")])
-    rows.append([(t("btn.effort"), "effort"), (t("btn.back"), "menu")])
+    rows.append([(t("btn.effort"), "effort")])
     return kb(*rows)
 def effort_menu():
     """One dial for both engines; each engine clamps it to what it accepts."""
@@ -111,7 +106,7 @@ def effort_menu():
         rows.append(row)
     mark = "✅ " if not CFG["effort"] else ""
     rows.append([(f"{mark}{t('effort.default')}", "effort:-")])
-    rows.append([(t("btn.back"), "menu")])
+    rows.append([(t("btn.back"), "settings")])
     return kb(*rows)
 def projects_menu():
     projects = list_projects()
@@ -125,7 +120,6 @@ def projects_menu():
             row = []
     if row:
         rows.append(row)
-    rows.append([(t("btn.back"), "menu")])
     return kb(*rows)
 def settings_menu():
     confirm = t("settings.confirm.on") if CFG["confirm_before_run"] else t("settings.confirm.off")
@@ -133,17 +127,15 @@ def settings_menu():
     return kb(
         [(confirm, "toggle_confirm")],
         [(safe, "toggle_safe")],
-        [(t("btn.engine"), "engine"), (t("btn.model"), "model")],
         [(t("btn.effort"), "effort"), (t("btn.fallback"), "fallback")],
         [(t("btn.language"), "language"), (t("btn.doctor"), "doctor")],
-        [(t("btn.projects"), "projects"), (t("btn.back"), "menu")],
     )
 def language_menu():
     rows = []
     for code in available_languages():
         mark = "✅ " if code == current_language() else ""
         rows.append([(f"{mark}{language_name(code)}", f"lang:{code}")])
-    rows.append([(t("btn.back"), "menu")])
+    rows.append([(t("btn.back"), "settings")])
     return kb(*rows)
 def fallback_menu():
     """The chain: toggle it, reorder it, and clear a cooldown that has gone stale."""
@@ -159,10 +151,10 @@ def fallback_menu():
             row.append(("⬇️", f"fb:down:{index}"))
         rows.append(row)
     rows.append([(t("btn.clear_cooldowns"), "fb:cool")])
-    rows.append([(t("btn.limit"), "limit"), (t("btn.back"), "menu")])
+    rows.append([(t("btn.back"), "settings")])
     return kb(*rows)
 def doctor_menu():
-    return kb([(t("btn.recheck"), "doctor")], [(t("btn.back"), "menu")])
+    return kb([(t("btn.recheck"), "doctor")], [(t("btn.back"), "settings")])
 def onboarding_language_menu():
     rows = [[(language_name(code), f"ob:lang:{code}")] for code in available_languages()]
     return kb(*rows)

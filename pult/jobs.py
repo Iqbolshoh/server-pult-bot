@@ -8,8 +8,8 @@ import threading
 import time
 
 from .core import (PREVIEW_CHARS, RULE, RUNNING, TELEGRAM_MAX_CHARS, UPLOAD_DIR, audit, card,
-                   fmt_clock, fmt_duration, fmt_tokens, h, log, quote, run_lock, shutdown,
-                   signal_group)
+                   fmt_clock, fmt_duration, fmt_tokens, h, log, queue_ready, quote, run_lock,
+                   shutdown, signal_group)
 from .config import CFG, LOCAL_API_KEY
 from .i18n import t
 from .db import db, db_lock
@@ -64,6 +64,8 @@ def start_job(chat_id, prompt, note="", mode=None, approved=False, engine=None):
         )
         db.commit()
         job_id = cur.lastrowid
+    if state == "queued":
+        queue_ready(engine).set()
     audit(f"job#{job_id} [{state}] [{engine}] [{workdir}] {prompt[:200]!r}")
 
     banner = engine_banner(engine)
@@ -100,13 +102,14 @@ def start_job(chat_id, prompt, note="", mode=None, approved=False, engine=None):
 def approve_job(job_id, mode):
     """Move a pending job into the queue. Returns a status line for the user."""
     with db_lock:
-        row = db.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()
+        row = db.execute("SELECT state,engine FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not row:
             return t("job.not_found", id=job_id)
         if row[0] != "pending":
             return t("job.already_state", id=job_id, state=h(row[0]))
         db.execute("UPDATE jobs SET state='queued', mode=? WHERE id=?", (mode, job_id))
         db.commit()
+    queue_ready(row[1]).set()
     audit(f"job#{job_id} approved mode={mode}")
     return t("job.approved.plan" if mode == "plan" else "job.approved.run", id=job_id)
 def send_user_file(chat_id, target):
@@ -202,7 +205,11 @@ def do_cancel(job_id=None, engine=None):
 _waiting_announced = set()
 def worker(engine):
     """One thread per engine. Jobs stay serialised within an engine, on purpose."""
+    ready = queue_ready(engine)
     while not shutdown.is_set():
+        # Cleared before the read, so a job queued from here on sets it again and
+        # cannot fall into the gap between the query and the wait.
+        ready.clear()
         with db_lock:
             row = db.execute(
                 "SELECT id,chat_id,prompt,project,mode,step,handover FROM jobs "
@@ -210,7 +217,7 @@ def worker(engine):
                 (engine,),
             ).fetchone()
         if not row:
-            shutdown.wait(1)
+            ready.wait(5)
             continue
         job_id, chat_id, prompt, project, mode, step, handover = row
         if not preflight(job_id, chat_id, engine, step or 0):
@@ -280,6 +287,7 @@ def hop_job(job_id, chat_id, engine, step, reason, resets_at=0):
             (target, index, engine if crossed else None, job_id),
         )
         db.commit()
+    queue_ready(target).set()
     failover.note_hop(job_id, engine, target, index, reason, resets_at)
     audit(f"job#{job_id} failover {engine} -> {target} step={index + 1} reason={reason}")
     send(chat_id,
@@ -688,4 +696,6 @@ def recover_interrupted_jobs():
     with db_lock:
         cur = db.execute("UPDATE jobs SET state='queued', started=NULL WHERE state='running'")
         db.commit()
+    for engine in ENGINE_ORDER:
+        queue_ready(engine).set()
     return cur.rowcount
