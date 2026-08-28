@@ -1,26 +1,13 @@
-"""Periodic disk and database upkeep."""
+"""Periodic disk, database and catalogue upkeep."""
 
 import glob
-import html
-import http.server
-import json
-import mimetypes
 import os
-import re
-import shutil
-import signal
 import sqlite3
-import subprocess
-import sys
-import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
 
 from .core import AUDIT_PATH, UPLOAD_DIR, log, shutdown
 from .db import db, db_lock
+from .engines import refresh_catalogue
 
 def housekeeping():
     """Keep uploads, the jobs table and the WAL from creeping up on disk."""
@@ -50,4 +37,9 @@ def housekeeping():
                 db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except sqlite3.Error as e:
             log(f"housekeeping: {e}")
+        # The model catalogue ages out on its own clock; this only pokes it.
+        try:
+            refresh_catalogue()
+        except Exception as e:
+            log(f"catalogue refresh: {e}")
         shutdown.wait(6 * 3600)

@@ -1,33 +1,31 @@
 """Telegram updates -> commands, callbacks and jobs."""
 
-import glob
-import html
-import http.server
-import json
-import mimetypes
 import os
-import re
-import shutil
-import signal
-import sqlite3
 import subprocess
-import sys
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
 
-from .core import MEDIA_GROUP_WINDOW, POLL_TIMEOUT, START_TIME, fmt_duration, h, log, shutdown
+from .core import (MEDIA_GROUP_WINDOW, POLL_TIMEOUT, SOURCE_DIR, START_TIME, fmt_duration, h,
+                   log, shutdown, version)
 from .config import CFG, save_config
+from .i18n import available_languages, language_name, reset_cache, t
 from .db import db, db_lock, meta_get, meta_set
 from .telegram import api_call, api_try, download_telegram_file, send
-from .engines import other_engine, engine_label, ENGINES, ENGINE_ORDER, clear_all_sessions, engine_choice_label, engine_model_label, resolve_model
+from .engines import (ENGINES, ENGINE_ORDER, EFFORTS, clear_all_sessions, clear_cooldown,
+                      engine_choice_label, engine_label, engine_model_label, other_engine,
+                      refresh_catalogue, resolve_model, set_engine_model)
+from . import failover
 from .projects import current_project, list_projects, project_label
-from .keyboards import LABEL_COMMANDS, back_menu, engine_menu, job_menu, main_menu, main_reply_kb, model_menu, projects_menu, settings_menu
-from .screens import HELP_TEXT, engine_text, history_text, jobs_text, limit_text, ls_text, model_text, projects_text, server_text, settings_text, start_text, status_text
-from .jobs import append_to_job, approve_job, deliver_full_result, do_cancel, run_shell, send_user_file, start_job
+from .keyboards import (back_menu, doctor_menu, effort_menu, engine_menu, fallback_menu,
+                        job_menu, label_commands, language_menu, main_menu, main_reply_kb,
+                        model_menu, onboarding_confirm_menu, onboarding_engine_menu,
+                        onboarding_language_menu, onboarding_projects_menu, projects_menu,
+                        settings_menu)
+from .screens import (doctor_text, effort_text, engine_text, fallback_text, help_text,
+                      history_text, jobs_text, language_text, limit_text, ls_text, model_text,
+                      projects_text, server_text, settings_text, start_text, status_text)
+from .jobs import (append_to_job, approve_job, deliver_full_result, do_cancel, run_shell,
+                   send_user_file, start_job)
 
 def poller():
     offset = int(meta_get("update_offset", 0))
@@ -73,10 +71,13 @@ def split_engine_prefix(text):
     return None, text
 def authorised(user_id):
     return user_id in CFG["allowed_user_ids"]
+def in_background(fn, *args):
+    """Run a slow screen off the poller thread, so the next update is not stuck."""
+    threading.Thread(target=fn, args=args, daemon=True).start()
 def handle_update(update):
     if "callback_query" in update:
-        # Tugmani alohida thread'da ishlaymiz: /server kabi sekin ekran poller'ni
-        # bloklab qo'ysa, keyingi bosishlar navbatda qolib "yuklanmoqda" bo'lib turardi.
+        # Buttons run on their own thread: a slow screen like /server used to block
+        # the poller, leaving every later tap spinning.
         threading.Thread(
             target=guarded_callback, args=(update["callback_query"],), daemon=True
         ).start()
@@ -107,11 +108,11 @@ def handle_update(update):
         return
 
     if not text:
-        send(chat_id, "Bu turdagi xabarni tushunmayman. Matn, rasm yoki fayl yuboring.")
+        send(chat_id, t("error.unsupported_message"))
         return
 
     # Bottom-keyboard labels are commands wearing a nicer coat.
-    text = LABEL_COMMANDS.get(text, text)
+    text = label_commands().get(text, text)
 
     if text.startswith("/"):
         handle_command(chat_id, text)
@@ -120,29 +121,27 @@ def handle_update(update):
     # "c: ...", "a: ...", "b: ..." pick an engine for this one message only.
     engine, text = split_engine_prefix(text)
     if not text:
-        send(chat_id, "Vazifa matni bo'sh.")
+        send(chat_id, t("error.empty_task"))
         return
 
     start_job(chat_id, text, engine=engine)
 def extract_attachment(msg):
-    """Return (file_id, filename, human_kind) for supported attachments."""
+    """Return (file_id, filename, human kind key) for supported attachments."""
     if msg.get("photo"):
         largest = max(msg["photo"], key=lambda p: p.get("file_size") or 0)
-        return largest["file_id"], "photo.jpg", "rasm"
+        return largest["file_id"], "photo.jpg", "word.photo"
     if msg.get("document"):
         doc = msg["document"]
-        return doc["file_id"], doc.get("file_name") or "file.bin", "fayl"
-    if msg.get("voice"):
-        return None  # handled separately below
+        return doc["file_id"], doc.get("file_name") or "file.bin", "word.file"
     return None
 media_groups = {}
 media_lock = threading.Lock()
 def handle_attachment(chat_id, msg, attachment, caption):
-    file_id, filename, kind = attachment
+    file_id, filename, kind_key = attachment
     try:
         path = download_telegram_file(file_id, filename)
     except Exception as e:
-        send(chat_id, f"❌ Faylni ololmadim: {e}")
+        send(chat_id, t("error.download_failed", error=e))
         return
 
     group_id = msg.get("media_group_id")
@@ -153,9 +152,9 @@ def handle_attachment(chat_id, msg, attachment, caption):
             log(f"attached {path} to queued job #{entry[0]}")
             return
 
-    prompt = f"[Foydalanuvchi {kind} yubordi: {path}]\n" + (
-        caption or f"Shu {kind}ga qara va nima qilish kerakligini ayt."
-    )
+    kind = t(kind_key)
+    prompt = t("job.attachment_prompt", kind=kind, path=path) + "\n" + (
+        caption or t("job.attachment_default_task", kind=kind))
     job_id = start_job(chat_id, prompt, note=f"📎 {os.path.basename(path)}")
     if group_id:
         with media_lock:
@@ -169,11 +168,23 @@ def try_pairing(user_id, chat_id, text):
         return False
     CFG["allowed_user_ids"] = [user_id]
     CFG["pairing_code"] = ""
-    save_config(CFG)
+    save_config()
     log(f"paired with user_id={user_id}")
-    send(chat_id, f"🔐 Ulandi. Bot endi faqat sizga javob beradi.\n\n{HELP_TEXT}",
-         markup=main_menu(), parse_mode="HTML")
+    send(chat_id, t("onboard.paired"), parse_mode="HTML")
+    begin_onboarding(chat_id)
     return True
+def begin_onboarding(chat_id):
+    """A first run must not require a hand-edited config.json."""
+    meta_set("onboard:step", "lang")
+    send(chat_id, t("onboard.language"), markup=onboarding_language_menu(), parse_mode="HTML")
+def finish_onboarding(chat_id):
+    CFG["onboarded"] = True
+    save_config()
+    meta_set("onboard:step", "done")
+    send(chat_id, t("onboard.done", project=h(project_label(current_project())),
+                    engine=h(engine_choice_label())),
+         markup=main_reply_kb(), parse_mode="HTML")
+    send(chat_id, help_text(), markup=main_menu(), parse_mode="HTML")
 def handle_command(chat_id, text):
     parts = text.split()
     cmd = parts[0].lower().split("@")[0]
@@ -181,24 +192,29 @@ def handle_command(chat_id, text):
 
     if cmd == "/start":
         send(chat_id, start_text(), markup=main_reply_kb(), parse_mode="HTML")
-        send(chat_id, "Nima qilamiz?", markup=main_menu())
+        if not CFG["onboarded"]:
+            begin_onboarding(chat_id)
+        else:
+            send(chat_id, t("menu.prompt"), markup=main_menu())
+
+    elif cmd in ("/setup", "/onboard"):
+        begin_onboarding(chat_id)
 
     elif cmd == "/help":
-        send(chat_id, HELP_TEXT, markup=back_menu(), parse_mode="HTML")
+        send(chat_id, help_text(), markup=back_menu(), parse_mode="HTML")
 
     elif cmd == "/menu":
-        send(chat_id, "Nima qilamiz?", markup=main_menu())
+        send(chat_id, t("menu.prompt"), markup=main_menu())
 
     elif cmd == "/keyboard":
-        send(chat_id, "⌨️ Tugmalar tiklandi.", markup=main_reply_kb())
+        send(chat_id, t("keyboard.restored"), markup=main_reply_kb())
 
     elif cmd == "/ping":
-        send(chat_id, f"🟢 Tirik. Bot uptime: {fmt_duration(time.time() - START_TIME)}")
+        send(chat_id, t("ping", uptime=fmt_duration(time.time() - START_TIME)))
 
     elif cmd == "/new":
         clear_all_sessions(current_project())
-        send(chat_id, f"🆕 <b>{h(project_label(current_project()))}</b> uchun yangi suhbat "
-                      f"boshlandi (eski kontekst unutildi).",
+        send(chat_id, t("session.cleared", project=h(project_label(current_project()))),
              markup=main_menu(), parse_mode="HTML")
 
     elif cmd == "/status":
@@ -208,7 +224,12 @@ def handle_command(chat_id, text):
         send(chat_id, jobs_text(), markup=back_menu(), parse_mode="HTML")
 
     elif cmd in ("/server", "/sys"):
-        send(chat_id, server_text(), markup=back_menu(), parse_mode="HTML")
+        in_background(lambda: send(chat_id, server_text(), markup=back_menu(),
+                                   parse_mode="HTML"))
+
+    elif cmd == "/doctor":
+        in_background(lambda: send(chat_id, doctor_text(), markup=doctor_menu(),
+                                   parse_mode="HTML"))
 
     elif cmd in ("/projects", "/sessions"):
         send(chat_id, projects_text(), markup=projects_menu(), parse_mode="HTML")
@@ -218,36 +239,60 @@ def handle_command(chat_id, text):
 
     elif cmd == "/sh":
         if not arg:
-            send(chat_id, "Foydalanish: <code>/sh systemctl status nginx</code>", parse_mode="HTML")
+            send(chat_id, t("shell.usage"), parse_mode="HTML")
         else:
-            run_shell(chat_id, arg)
+            in_background(run_shell, chat_id, arg)
 
-    elif cmd == "/model":
+    elif cmd in ("/model", "/models"):
         if arg:
             target, chosen = resolve_model(arg)
-            CFG[ENGINES[target]["model_key"]] = chosen
-            save_config(CFG)
+            set_engine_model(target, chosen)
+            save_config()
         send(chat_id, model_text(), markup=model_menu(), parse_mode="HTML")
+
+    elif cmd == "/effort":
+        if arg:
+            level = arg.strip().lower()
+            if level in ("-", "default", "odatiy"):
+                CFG["effort"] = ""
+            elif level in EFFORTS:
+                CFG["effort"] = level
+            else:
+                send(chat_id, t("effort.usage", levels=", ".join(EFFORTS)), parse_mode="HTML")
+                return
+            save_config()
+        send(chat_id, effort_text(), markup=effort_menu(), parse_mode="HTML")
+
+    elif cmd == "/safe":
+        CFG["safe_mode"] = not CFG["safe_mode"]
+        save_config()
+        send(chat_id, settings_text(), markup=settings_menu(), parse_mode="HTML")
+
+    elif cmd in ("/fallback", "/chain"):
+        if arg.strip().lower() in ("on", "off"):
+            CFG["fallback_enabled"] = arg.strip().lower() == "on"
+            save_config()
+        send(chat_id, fallback_text(), markup=fallback_menu(), parse_mode="HTML")
+
+    elif cmd in ("/language", "/lang", "/til"):
+        code = arg.strip().lower()
+        if code in available_languages():
+            set_language(code)
+        send(chat_id, language_text(), markup=language_menu(), parse_mode="HTML")
 
     elif cmd == "/mode":
         valid = ["auto", "acceptEdits", "plan", "manual", "dontAsk", "bypassPermissions"]
         if arg:
             if arg not in valid:
-                send(chat_id, "Rejimlar: " + ", ".join(valid))
+                send(chat_id, t("mode.usage", modes=", ".join(valid)))
                 return
             CFG["permission_mode"] = arg
-            save_config(CFG)
-        send(chat_id, f"🔓 Rejim: <b>{h(CFG['permission_mode'])}</b>\n"
-                      f"<code>auto</code> — so'ramasdan bajaradi\n"
-                      f"<code>plan</code> — faqat reja, o'zgartirmaydi\n"
-                      f"<code>acceptEdits</code> — fayl tahriri avtomatik, qolgani so'raladi",
-             parse_mode="HTML")
+            save_config()
+        send(chat_id, t("mode.body", mode=h(CFG["permission_mode"])), parse_mode="HTML")
 
     elif cmd == "/get":
         if not arg:
-            send(chat_id, "Foydalanish: <code>/get 12</code> — ish natijasi, "
-                          "<code>/get storage/logs/laravel.log</code> — fayl",
-                 parse_mode="HTML")
+            send(chat_id, t("get.usage"), parse_mode="HTML")
         elif arg.isdigit():
             deliver_full_result(chat_id, int(arg))
         else:
@@ -264,9 +309,7 @@ def handle_command(chat_id, text):
                     only_engine = {"claude": "claude", "agy": "agy",
                                    "antigravity": "agy"}.get(arg.lower())
                 if only_engine is None:
-                    send(chat_id, "Foydalanish: <code>/stop</code> · "
-                                  "<code>/stop claude</code> · <code>/stop 12</code>",
-                         parse_mode="HTML")
+                    send(chat_id, t("cancel.usage"), parse_mode="HTML")
                     return
         send(chat_id, do_cancel(target, only_engine))
 
@@ -275,7 +318,7 @@ def handle_command(chat_id, text):
 
     elif cmd == "/confirm":
         CFG["confirm_before_run"] = not CFG["confirm_before_run"]
-        save_config(CFG)
+        save_config()
         send(chat_id, settings_text(), markup=settings_menu(), parse_mode="HTML")
 
     elif cmd in ("/engine", "/dvigatel"):
@@ -285,17 +328,15 @@ def handle_command(chat_id, text):
                        "antigravity": "agy", "a": "agy", "both": "both",
                        "ikkalasi": "both", "b": "both"}
             if choice not in aliases:
-                send(chat_id, "Tanlovlar: <code>claude</code>, <code>agy</code>, "
-                              "<code>both</code>", parse_mode="HTML")
+                send(chat_id, t("engine.usage"), parse_mode="HTML")
                 return
             CFG["engine"] = aliases[choice]
-            save_config(CFG)
+            save_config()
         send(chat_id, engine_text(), markup=engine_menu(), parse_mode="HTML")
 
     elif cmd == "/both":
         if not arg:
-            send(chat_id, "Foydalanish: <code>/both nginx konfigini tekshir</code>",
-                 parse_mode="HTML")
+            send(chat_id, t("both.usage"), parse_mode="HTML")
         else:
             start_job(chat_id, arg, engine="both")
 
@@ -306,26 +347,58 @@ def handle_command(chat_id, text):
         send(chat_id, history_text(), markup=back_menu(), parse_mode="HTML")
 
     elif cmd == "/pwd":
-        send(chat_id, f"📁 <b>{h(project_label(current_project()))}</b>\n"
-                      f"<code>{h(current_project())}</code>", parse_mode="HTML")
+        send(chat_id, t("pwd", project=h(project_label(current_project())),
+                        path=h(current_project())), parse_mode="HTML")
 
     elif cmd == "/ls":
         send(chat_id, ls_text(arg), parse_mode="HTML")
 
     elif cmd == "/file":
         if not arg:
-            send(chat_id, "Foydalanish: <code>/file storage/logs/laravel.log</code>",
-                 parse_mode="HTML")
+            send(chat_id, t("file.usage"), parse_mode="HTML")
         else:
             send_user_file(chat_id, arg)
 
+    elif cmd == "/update":
+        in_background(do_update, chat_id)
+
     elif cmd == "/restart":
         # Supervisor restarts us (autorestart=true); a running job is requeued on start.
-        send(chat_id, "🔄 Bot qayta ishga tushmoqda…")
+        send(chat_id, t("restart.notice"))
         threading.Timer(2.0, lambda: (shutdown.set(), do_cancel())).start()
 
     else:
-        send(chat_id, f"Noma'lum buyruq: {h(cmd)}", markup=main_menu(), parse_mode="HTML")
+        send(chat_id, t("error.unknown_command", cmd=h(cmd)), markup=main_menu(),
+             parse_mode="HTML")
+def set_language(code):
+    CFG["language"] = code
+    save_config()
+    reset_cache()
+def do_update(chat_id):
+    """git pull, migrate, restart -- refused on a dirty tree, so no work is lost."""
+    def git(*args):
+        return subprocess.run(["git", "-C", SOURCE_DIR, *args], capture_output=True,
+                              text=True, timeout=120)
+
+    dirty = git("status", "--porcelain").stdout.strip()
+    if dirty:
+        send(chat_id, t("update.dirty", files=h(dirty[:600])), parse_mode="HTML")
+        return
+    before = version()
+    pull = git("pull", "--ff-only")
+    output = (pull.stdout + pull.stderr).strip()
+    if pull.returncode != 0:
+        send(chat_id, t("update.failed", error=h(output[-600:])), parse_mode="HTML")
+        return
+    after = version()
+    if before == after:
+        send(chat_id, t("update.current", version=h(after)), parse_mode="HTML")
+        return
+    send(chat_id, t("update.done", before=h(before), after=h(after),
+                    output=h(output[-600:])), parse_mode="HTML")
+    # The new code is only live after a restart: the modules already loaded stay
+    # in memory otherwise. Migrations run on the way back up.
+    threading.Timer(2.0, lambda: (shutdown.set(), do_cancel())).start()
 def guarded_callback(query):
     try:
         handle_callback(query)
@@ -338,8 +411,8 @@ def handle_callback(query):
     chat_id = (msg.get("chat") or {}).get("id")
     message_id = msg.get("message_id")
 
-    # Telegram spinner faqat answerCallbackQuery kelganda o'chadi va so'rov bir necha
-    # soniyada eskiradi — shuning uchun ishni boshlashdan oldin darhol javob beramiz.
+    # The spinner only stops when answerCallbackQuery arrives, and the query goes
+    # stale in seconds -- so answer before doing any work.
     answered = threading.Event()
 
     def answer(note=""):
@@ -352,11 +425,11 @@ def handle_callback(query):
             log(f"answerCallbackQuery failed for {data!r}")
 
     if not authorised(user_id) or chat_id != user_id:
-        answer("Ruxsat yo'q")
+        answer(t("error.forbidden"))
         return
 
-    # Tarmoq sekin bo'lsa ham spinner osilib qolmasin: 1.5 soniyada hech kim javob
-    # bermagan bo'lsa, o'zimiz bo'sh javob yuboramiz.
+    # Even on a slow uplink the spinner must not hang: if nothing has answered in
+    # 1.5 seconds, send an empty answer.
     threading.Timer(1.5, answer).start()
 
     def screen(text, markup):
@@ -368,19 +441,22 @@ def handle_callback(query):
 
     if data == "menu":
         answer()
-        screen("Nima qilamiz?", main_menu())
+        screen(t("menu.prompt"), main_menu())
     elif data == "status":
         answer()
         screen(status_text(), back_menu())
     elif data == "server":
-        answer("O'lchanmoqda…")
+        answer(t("wait.measuring"))
         screen(server_text(), back_menu())
+    elif data == "doctor":
+        answer(t("wait.checking"))
+        screen(doctor_text(), doctor_menu())
     elif data == "jobs":
         answer()
         screen(jobs_text(), back_menu())
     elif data == "help":
         answer()
-        screen(HELP_TEXT, back_menu())
+        screen(help_text(), back_menu())
     elif data == "settings":
         answer()
         screen(settings_text(), settings_menu())
@@ -391,7 +467,7 @@ def handle_callback(query):
         choice = data.split(":", 1)[1]
         if choice in ENGINE_ORDER or choice == "both":
             CFG["engine"] = choice
-            save_config(CFG)
+            save_config()
             answer(engine_choice_label())
         screen(engine_text(), engine_menu())
     elif data == "noop":
@@ -399,14 +475,57 @@ def handle_callback(query):
     elif data == "model":
         answer()
         screen(model_text(), model_menu())
+    elif data == "models_refresh":
+        answer(t("wait.reading"))
+        refresh_catalogue(force=True)
+        screen(model_text(), model_menu())
     elif data == "limit":
         answer()
         screen(limit_text(), back_menu())
+    elif data == "effort":
+        answer()
+        screen(effort_text(), effort_menu())
+    elif data.startswith("effort:"):
+        level = data.split(":", 1)[1]
+        CFG["effort"] = "" if level == "-" else level
+        save_config()
+        answer(CFG["effort"] or t("effort.default"))
+        screen(effort_text(), effort_menu())
+    elif data == "language":
+        answer()
+        screen(language_text(), language_menu())
+    elif data.startswith("lang:"):
+        code = data.split(":", 1)[1]
+        if code in available_languages():
+            set_language(code)
+            answer(language_name(code))
+            send(chat_id, t("keyboard.restored"), markup=main_reply_kb())
+        screen(language_text(), language_menu())
+    elif data == "fallback":
+        answer()
+        screen(fallback_text(), fallback_menu())
+    elif data == "fb:toggle":
+        CFG["fallback_enabled"] = not CFG["fallback_enabled"]
+        save_config()
+        answer(t("word.on") if CFG["fallback_enabled"] else t("word.off"))
+        screen(fallback_text(), fallback_menu())
+    elif data.startswith("fb:up:") or data.startswith("fb:down:"):
+        _, direction, index = data.split(":", 2)
+        moved = failover.move_step(int(index), -1 if direction == "up" else 1)
+        if moved is not None:
+            save_config()
+        answer()
+        screen(fallback_text(), fallback_menu())
+    elif data == "fb:cool":
+        for eng in ENGINE_ORDER:
+            clear_cooldown(eng)
+        answer(t("fallback.cooldowns_cleared"))
+        screen(fallback_text(), fallback_menu())
     elif data.startswith("setmodel:"):
         _, eng, choice = data.split(":", 2)
         if eng in ENGINES:
-            CFG[ENGINES[eng]["model_key"]] = "" if choice == "-" else choice
-            save_config(CFG)
+            set_engine_model(eng, "" if choice == "-" else choice)
+            save_config()
             answer(engine_model_label(eng))
         screen(model_text(), model_menu())
     elif data == "projects":
@@ -414,9 +533,8 @@ def handle_callback(query):
         screen(projects_text(), projects_menu())
     elif data == "new":
         clear_all_sessions(current_project())
-        answer("Kontekst tozalandi")
-        screen(f"🆕 <b>{h(project_label(current_project()))}</b> uchun yangi suhbat boshlandi.",
-               main_menu())
+        answer(t("session.cleared_short"))
+        screen(t("session.cleared", project=h(project_label(current_project()))), main_menu())
     elif data.startswith("cd:"):
         projects = list_projects()
         idx = int(data.split(":", 1)[1])
@@ -425,21 +543,28 @@ def handle_callback(query):
             answer(project_label(projects[idx]))
             screen(projects_text(), projects_menu())
         else:
-            answer("Topilmadi")
+            answer(t("error.not_found"))
     elif data == "toggle_confirm":
         CFG["confirm_before_run"] = not CFG["confirm_before_run"]
-        save_config(CFG)
-        answer("Tasdiq: " + ("yoqildi" if CFG["confirm_before_run"] else "o'chirildi"))
+        save_config()
+        answer(t("word.on") if CFG["confirm_before_run"] else t("word.off"))
         screen(settings_text(), settings_menu())
+    elif data == "toggle_safe":
+        CFG["safe_mode"] = not CFG["safe_mode"]
+        save_config()
+        answer(t("word.on") if CFG["safe_mode"] else t("word.off"))
+        screen(settings_text(), settings_menu())
+    elif data.startswith("ob:"):
+        handle_onboarding(chat_id, data, answer, screen)
     elif data.startswith("run:"):
         job_id = int(data.split(":", 1)[1])
         note = approve_job(job_id, "auto")
-        answer("Bajarilmoqda")
+        answer(t("wait.running"))
         screen(note, job_menu(job_id))
     elif data.startswith("plan:"):
         job_id = int(data.split(":", 1)[1])
         note = approve_job(job_id, "plan")
-        answer("Reja tuzilmoqda")
+        answer(t("wait.planning"))
         screen(note, job_menu(job_id))
     elif data.startswith("drop:"):
         job_id = int(data.split(":", 1)[1])
@@ -449,21 +574,19 @@ def handle_callback(query):
                 (time.time(), job_id),
             )
             db.commit()
-        answer("Bekor qilindi")
-        screen(f"❌ <b>#{job_id}</b> bekor qilindi. Hech narsa bajarilmadi.", main_menu())
+        answer(t("word.cancelled"))
+        screen(t("job.dropped", id=job_id), main_menu())
     elif data.startswith("exec:"):
         job_id = int(data.split(":", 1)[1])
         with db_lock:
             row = db.execute("SELECT engine FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not row:
-            answer("Topilmadi")
+            answer(t("error.not_found"))
         else:
-            answer("Bajarilmoqda")
+            answer(t("wait.running"))
             # The plan lives in that engine's conversation and nowhere else.
-            start_job(chat_id,
-                      "Yuqorida tuzgan rejangni tasdiqlayman — endi to'liq bajar.",
-                      note=f"reja #{job_id}", mode="auto", approved=True,
-                      engine=row[0])
+            start_job(chat_id, t("job.execute_plan"), note=f"#{job_id}", mode="auto",
+                      approved=True, engine=row[0])
     elif data.startswith("cancel:"):
         note = do_cancel(int(data.split(":", 1)[1]))
         answer(note[:180])
@@ -474,25 +597,56 @@ def handle_callback(query):
             row = db.execute("SELECT prompt,engine FROM jobs WHERE id=?", (job_id,)).fetchone()
         target = other_engine(row[1]) if row else None
         if not target:
-            answer("Topilmadi")
+            answer(t("error.not_found"))
         else:
-            answer(f"{engine_label(target)}ga yuborildi")
-            start_job(chat_id, row[0], note=f"#{job_id} bilan solishtirish",
+            answer(engine_label(target))
+            start_job(chat_id, row[0], note=t("job.compare_note", id=job_id),
                       approved=True, engine=target)
     elif data.startswith("again:"):
         job_id = int(data.split(":", 1)[1])
         with db_lock:
             row = db.execute("SELECT prompt,engine FROM jobs WHERE id=?", (job_id,)).fetchone()
         if row:
-            answer("Qayta yuborildi")
+            answer(t("word.resent"))
             start_job(chat_id, row[0], engine=row[1])
         else:
-            answer("Topilmadi")
+            answer(t("error.not_found"))
     elif data.startswith("full:"):
-        answer("Yuborilmoqda…")
+        answer(t("wait.sending"))
         deliver_full_result(chat_id, int(data.split(":", 1)[1]))
     else:
         answer()
+def handle_onboarding(chat_id, data, answer, screen):
+    """Four taps: language, project, engine, confirm-before-run."""
+    _, field, value = data.split(":", 2)
+    if field == "lang":
+        if value in available_languages():
+            set_language(value)
+        answer(language_name(value))
+        meta_set("onboard:step", "dir")
+        screen(t("onboard.project"), onboarding_projects_menu())
+    elif field == "dir":
+        if value != "-":
+            projects = list_projects()
+            index = int(value)
+            if 0 <= index < len(projects):
+                meta_set("workdir", projects[index])
+        answer(project_label(current_project()))
+        meta_set("onboard:step", "engine")
+        screen(t("onboard.engine"), onboarding_engine_menu())
+    elif field == "engine":
+        if value in ENGINE_ORDER or value == "both":
+            CFG["engine"] = value
+            save_config()
+        answer(engine_choice_label())
+        meta_set("onboard:step", "confirm")
+        screen(t("onboard.confirm"), onboarding_confirm_menu())
+    elif field == "confirm":
+        CFG["confirm_before_run"] = value == "1"
+        save_config()
+        answer()
+        screen(t("onboard.saved"), {"inline_keyboard": []})
+        finish_onboarding(chat_id)
 def do_cd_by_name(chat_id, name):
     if not name:
         send(chat_id, projects_text(), markup=projects_menu(), parse_mode="HTML")
@@ -502,7 +656,8 @@ def do_cd_by_name(chat_id, name):
     if not matches and os.path.isdir(name):
         matches = [os.path.abspath(name)]
     if not matches:
-        send(chat_id, f"❌ <b>{h(name)}</b> topilmadi.", markup=projects_menu(), parse_mode="HTML")
+        send(chat_id, t("error.project_not_found", name=h(name)), markup=projects_menu(),
+             parse_mode="HTML")
         return
     meta_set("workdir", matches[0])
     send(chat_id, projects_text(), markup=projects_menu(), parse_mode="HTML")

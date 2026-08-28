@@ -1,50 +1,35 @@
-"""Inline and reply keyboards."""
-
-import glob
-import html
-import http.server
-import json
-import mimetypes
-import os
-import re
-import shutil
-import signal
-import sqlite3
-import subprocess
-import sys
-import threading
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
+"""Inline and reply keyboards. Every label comes from the active locale."""
 
 from .config import CFG
-from .engines import other_engine, engine_label, ENGINES, ENGINE_ORDER, engine_model
+from .i18n import available_languages, current_language, language_name, t
+from .engines import (ENGINES, ENGINE_ORDER, EFFORTS, engine_label, engine_model,
+                      engine_models, entry_label, other_engine)
+from . import failover
 from .projects import current_project, list_projects, project_label
 
-LABEL_COMMANDS = {
-    "📊 Holat": "/status",
-    "🖥 Server": "/server",
-    "📋 Ishlar": "/jobs",
-    "🗂 Loyiha": "/projects",
-    "🤖 Model": "/model",
-    "📈 Limit": "/limit",
-    "🧩 Dvigatel": "/engine",
-    "🆕 Yangi suhbat": "/new",
-    "⏹ To'xtat": "/stop",
-    "⚙️ Sozlama": "/settings",
-    "❓ Yordam": "/help",
-}
+# The persistent bottom keyboard: eleven labels, three per row. Each one is a
+# command wearing a nicer coat, so the dispatcher only ever sees commands.
+KEYBOARD_ROWS = [
+    [("btn.status", "/status"), ("btn.server", "/server"), ("btn.jobs", "/jobs")],
+    [("btn.projects", "/projects"), ("btn.model", "/model"), ("btn.limit", "/limit")],
+    [("btn.engine", "/engine"), ("btn.new", "/new"), ("btn.stop", "/stop")],
+    [("btn.settings", "/settings"), ("btn.help", "/help")],
+]
+def label_commands():
+    """label -> command, in every installed language.
+
+    Telegram keeps showing the keyboard it was last sent, so a label the operator
+    taps right after switching language must still resolve.
+    """
+    mapping = {}
+    for lang in available_languages() or [current_language()]:
+        for row in KEYBOARD_ROWS:
+            for key, command in row:
+                mapping[t(key, lang=lang)] = command
+    return mapping
 def main_reply_kb():
-    """Persistent bottom keyboard -- same layout as the Antigravity bot."""
     return {
-        "keyboard": [
-            [{"text": "📊 Holat"}, {"text": "🖥 Server"}, {"text": "📋 Ishlar"}],
-            [{"text": "🗂 Loyiha"}, {"text": "🤖 Model"}, {"text": "📈 Limit"}],
-            [{"text": "🧩 Dvigatel"}, {"text": "🆕 Yangi suhbat"}, {"text": "⏹ To'xtat"}],
-            [{"text": "⚙️ Sozlama"}, {"text": "❓ Yordam"}],
-        ],
+        "keyboard": [[{"text": t(key)} for key, _cmd in row] for row in KEYBOARD_ROWS],
         "resize_keyboard": True,
         "is_persistent": True,
     }
@@ -56,35 +41,36 @@ def kb(*rows):
     }
 def main_menu():
     return kb(
-        [("📊 Holat", "status"), ("🖥 Server", "server")],
-        [("🗂 Loyihalar", "projects"), ("📋 Ishlar", "jobs")],
-        [("🧩 Dvigatel", "engine"), ("🤖 Model", "model")],
-        [("📈 Limit", "limit"), ("🆕 Yangi suhbat", "new")],
-        [("⚙️ Sozlama", "settings")],
-        [("❓ Yordam", "help")],
+        [(t("btn.status"), "status"), (t("btn.server"), "server")],
+        [(t("btn.projects"), "projects"), (t("btn.jobs"), "jobs")],
+        [(t("btn.engine"), "engine"), (t("btn.model"), "model")],
+        [(t("btn.limit"), "limit"), (t("btn.new"), "new")],
+        [(t("btn.settings"), "settings")],
+        [(t("btn.help"), "help")],
     )
 def back_menu():
-    return kb([("⬅️ Menyu", "menu")])
-def job_menu(job_id, engine="claude"):
-    return kb([("⏹ To'xtatish", f"cancel:{job_id}"), ("📊 Holat", "status")])
+    return kb([(t("btn.back"), "menu")])
+def job_menu(job_id):
+    """Buttons on a running job. The engine is already named in the banner above."""
+    return kb([(t("btn.stop_job"), f"cancel:{job_id}"), (t("btn.status"), "status")])
 def confirm_menu(job_id):
     """Shown before anything runs, when confirm_before_run is on."""
     return kb(
-        [("▶️ Bajar", f"run:{job_id}"), ("🧭 Avval reja", f"plan:{job_id}")],
-        [("❌ Bekor", f"drop:{job_id}")],
+        [(t("btn.run"), f"run:{job_id}"), (t("btn.plan_first"), f"plan:{job_id}")],
+        [(t("btn.drop"), f"drop:{job_id}")],
     )
 def result_menu(job_id, full=False, planned=False, engine=None):
     rows = []
     if planned:
-        rows.append([("✅ Rejani bajar", f"exec:{job_id}")])
+        rows.append([(t("btn.exec_plan"), f"exec:{job_id}")])
     other = other_engine(engine) if engine else None
     if other:
         # Same task, other engine -- the cheapest way to compare the two.
-        rows.append([(f"🔀 {engine_label(other)}da ham sina", f"other:{job_id}")])
-    row = [("🔁 Qayta", f"again:{job_id}"), ("🆕 Yangi suhbat", "new"),
-           ("⬅️ Menyu", "menu")]
+        rows.append([(t("btn.try_other", engine=engine_label(other)), f"other:{job_id}")])
+    row = [(t("btn.again"), f"again:{job_id}"), (t("btn.new"), "new"),
+           (t("btn.back"), "menu")]
     if full:
-        row.insert(0, ("📄 To'liq matn", f"full:{job_id}"))
+        row.insert(0, (t("btn.full_text"), f"full:{job_id}"))
     rows.append(row)
     return kb(*rows)
 def engine_menu():
@@ -93,23 +79,39 @@ def engine_menu():
         mark = "✅ " if CFG["engine"] == eng else ""
         rows.append([(f"{mark}{ENGINES[eng]['label']}", f"setengine:{eng}")])
     mark = "✅ " if CFG["engine"] == "both" else ""
-    rows.append([(f"{mark}🤝 Ikkalasi (parallel)", "setengine:both")])
-    rows.append([("⬅️ Menyu", "menu")])
+    rows.append([(f"{mark}{t('engine.both')}", "setengine:both")])
+    rows.append([(t("btn.back"), "menu")])
     return kb(*rows)
 def model_menu():
     rows = []
     for eng in ENGINE_ORDER:
         rows.append([(f"— {ENGINES[eng]['label']} —", "noop")])
         row = []
-        for mid, label, _desc, _effort in ENGINES[eng]["models"]:
-            mark = "✅ " if mid == engine_model(eng) else ""
-            row.append((f"{mark}{label}", f"setmodel:{eng}:{mid or '-'}"))
+        for entry in engine_models(eng):
+            mark = "✅ " if entry["id"] == engine_model(eng) else ""
+            row.append((f"{mark}{entry_label(entry)}", f"setmodel:{eng}:{entry['id'] or '-'}"))
             if len(row) == 2:
                 rows.append(row)
                 row = []
         if row:
             rows.append(row)
-    rows.append([("⬅️ Menyu", "menu")])
+    rows.append([(t("btn.refresh_models"), "models_refresh")])
+    rows.append([(t("btn.effort"), "effort"), (t("btn.back"), "menu")])
+    return kb(*rows)
+def effort_menu():
+    """One dial for both engines; each engine clamps it to what it accepts."""
+    rows, row = [], []
+    for level in EFFORTS:
+        mark = "✅ " if CFG["effort"] == level else ""
+        row.append((f"{mark}{level}", f"effort:{level}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    mark = "✅ " if not CFG["effort"] else ""
+    rows.append([(f"{mark}{t('effort.default')}", "effort:-")])
+    rows.append([(t("btn.back"), "menu")])
     return kb(*rows)
 def projects_menu():
     projects = list_projects()
@@ -123,13 +125,64 @@ def projects_menu():
             row = []
     if row:
         rows.append(row)
-    rows.append([("⬅️ Menyu", "menu")])
+    rows.append([(t("btn.back"), "menu")])
     return kb(*rows)
 def settings_menu():
-    toggle = "🛡 Tasdiq: YOQILGAN" if CFG["confirm_before_run"] else "⚡ Tasdiq: O'CHIQ"
+    confirm = t("settings.confirm.on") if CFG["confirm_before_run"] else t("settings.confirm.off")
+    safe = t("settings.safe.on") if CFG["safe_mode"] else t("settings.safe.off")
     return kb(
-        [(toggle, "toggle_confirm")],
-        [("🧩 Dvigatel", "engine"), ("🤖 Model", "model")],
-        [("📈 Limit", "limit")],
-        [("🗂 Loyihalar", "projects"), ("⬅️ Menyu", "menu")],
+        [(confirm, "toggle_confirm")],
+        [(safe, "toggle_safe")],
+        [(t("btn.engine"), "engine"), (t("btn.model"), "model")],
+        [(t("btn.effort"), "effort"), (t("btn.fallback"), "fallback")],
+        [(t("btn.language"), "language"), (t("btn.doctor"), "doctor")],
+        [(t("btn.projects"), "projects"), (t("btn.back"), "menu")],
+    )
+def language_menu():
+    rows = []
+    for code in available_languages():
+        mark = "✅ " if code == current_language() else ""
+        rows.append([(f"{mark}{language_name(code)}", f"lang:{code}")])
+    rows.append([(t("btn.back"), "menu")])
+    return kb(*rows)
+def fallback_menu():
+    """The chain: toggle it, reorder it, and clear a cooldown that has gone stale."""
+    toggle = t("fallback.on") if failover.enabled() else t("fallback.off")
+    rows = [[(toggle, "fb:toggle")]]
+    steps = failover.chain()
+    for index, step in enumerate(steps):
+        row = [(f"{index + 1}. {engine_label(step['engine'])} "
+                f"{step['model'] or '—'}", "noop")]
+        if index:
+            row.append(("⬆️", f"fb:up:{index}"))
+        if index < len(steps) - 1:
+            row.append(("⬇️", f"fb:down:{index}"))
+        rows.append(row)
+    rows.append([(t("btn.clear_cooldowns"), "fb:cool")])
+    rows.append([(t("btn.limit"), "limit"), (t("btn.back"), "menu")])
+    return kb(*rows)
+def doctor_menu():
+    return kb([(t("btn.recheck"), "doctor")], [(t("btn.back"), "menu")])
+def onboarding_language_menu():
+    rows = [[(language_name(code), f"ob:lang:{code}")] for code in available_languages()]
+    return kb(*rows)
+def onboarding_projects_menu():
+    rows, row = [], []
+    for i, path in enumerate(list_projects()[:12]):
+        row.append((project_label(path), f"ob:dir:{i}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([(t("btn.skip"), "ob:dir:-")])
+    return kb(*rows)
+def onboarding_engine_menu():
+    rows = [[(ENGINES[eng]["label"], f"ob:engine:{eng}")] for eng in ENGINE_ORDER]
+    rows.append([(t("engine.both"), "ob:engine:both")])
+    return kb(*rows)
+def onboarding_confirm_menu():
+    return kb(
+        [(t("onboard.confirm.keep"), "ob:confirm:1")],
+        [(t("onboard.confirm.drop"), "ob:confirm:0")],
     )

@@ -1,23 +1,8 @@
 """SQLite schema and the key/value meta table."""
 
-import glob
-import html
-import http.server
 import json
-import mimetypes
-import os
-import re
-import shutil
-import signal
 import sqlite3
-import subprocess
-import sys
 import threading
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
 
 from .core import DB_PATH, log
 
@@ -41,14 +26,26 @@ db.executescript(
         started   REAL,
         finished  REAL,
         result    TEXT,
-        exit_code INTEGER
+        exit_code INTEGER,
+        project   TEXT,
+        cost      REAL,
+        turns     INTEGER,
+        mode      TEXT,
+        engine    TEXT NOT NULL DEFAULT 'claude',
+        tokens    INTEGER,
+        step      INTEGER NOT NULL DEFAULT 0,   -- which failover step this job is on
+        handover  TEXT                          -- engine that handed it over, if any
     );
     CREATE TABLE IF NOT EXISTS outbox (
-        id       INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id  INTEGER NOT NULL,
-        text     TEXT NOT NULL,
-        attempts INTEGER NOT NULL DEFAULT 0,
-        created  REAL NOT NULL
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id    INTEGER NOT NULL,
+        text       TEXT NOT NULL,
+        attempts   INTEGER NOT NULL DEFAULT 0,
+        created    REAL NOT NULL,
+        kind       TEXT NOT NULL DEFAULT 'text',  -- text | doc
+        parse_mode TEXT,
+        markup     TEXT,
+        file_path  TEXT
     );
     """
 )
@@ -64,18 +61,14 @@ def ensure_columns(table, columns):
                 log(f"migrated: {table}.{name}")
         db.commit()
 
+# A database created before any of these columns existed keeps working: the table
+# above is only used for a brand-new file, and this brings an old one up to it.
 ensure_columns("jobs", {"project": "TEXT", "cost": "REAL", "turns": "INTEGER", "mode": "TEXT",
-                        "engine": "TEXT NOT NULL DEFAULT 'claude'", "tokens": "INTEGER"})
+                        "engine": "TEXT NOT NULL DEFAULT 'claude'", "tokens": "INTEGER",
+                        "step": "INTEGER NOT NULL DEFAULT 0", "handover": "TEXT"})
 
-ensure_columns(
-    "outbox",
-    {
-        "kind": "TEXT NOT NULL DEFAULT 'text'",  # text | doc
-        "parse_mode": "TEXT",
-        "markup": "TEXT",
-        "file_path": "TEXT",
-    },
-)
+ensure_columns("outbox", {"kind": "TEXT NOT NULL DEFAULT 'text'", "parse_mode": "TEXT",
+                          "markup": "TEXT", "file_path": "TEXT"})
 def meta_get(key, default=None):
     with db_lock:
         row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -88,3 +81,17 @@ def meta_set(key, value):
             (key, str(value)),
         )
         db.commit()
+def meta_del(key):
+    with db_lock:
+        db.execute("DELETE FROM meta WHERE key=?", (key,))
+        db.commit()
+def meta_get_json(key, default=None):
+    raw = meta_get(key)
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return default
+def meta_set_json(key, value):
+    meta_set(key, json.dumps(value, ensure_ascii=False))

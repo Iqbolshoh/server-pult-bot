@@ -1,31 +1,26 @@
 """Paths, shared runtime state and small formatting helpers."""
 
-import glob
 import html
-import http.server
-import json
-import mimetypes
 import os
-import re
-import shutil
-import signal
-import sqlite3
 import subprocess
-import sys
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
 
 
-# core.py lives inside the package, so the project root is one level up.
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The package sits inside the source tree. State (config, database, uploads,
+# audit log) normally lives beside it, but SERVER_PULT_HOME moves it elsewhere:
+# that is what lets a test point the whole package at a temp directory, and what
+# lets the installer keep state out of a git checkout.
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+SOURCE_DIR = os.path.dirname(PACKAGE_DIR)
+BASE_DIR = os.path.abspath(os.environ.get("SERVER_PULT_HOME") or SOURCE_DIR)
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 DB_PATH = os.path.join(BASE_DIR, "state.db")
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 AUDIT_PATH = os.path.join(BASE_DIR, "audit.log")
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+# Translations ship with the code, never with the state directory.
+LOCALES_DIR = os.path.join(SOURCE_DIR, "locales")
 TELEGRAM_MAX_CHARS = 3800
 POLL_TIMEOUT = 50
 INLINE_RESULT_LIMIT = 3400  # longer results are delivered as a .md file
@@ -42,7 +37,6 @@ def audit(line):
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{line}\n")
     except OSError:
         pass
-ENV_PATH = os.path.join(BASE_DIR, ".env")
 def h(text):
     return html.escape(str(text))
 def fmt_tokens(count):
@@ -60,9 +54,51 @@ def fmt_duration(seconds):
     if seconds < 3600:
         return f"{seconds // 60}m {seconds % 60}s"
     return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+def fmt_clock(unix_ts):
+    """Local HH:MM for a reset timestamp, or an empty string when there is none."""
+    if not unix_ts:
+        return ""
+    return time.strftime("%H:%M", time.localtime(float(unix_ts)))
+def fmt_when(unix_ts):
+    """HH:MM for today, DD.MM HH:MM for anything further out."""
+    if not unix_ts:
+        return ""
+    when = time.localtime(float(unix_ts))
+    if time.strftime("%Y%m%d", when) == time.strftime("%Y%m%d"):
+        return time.strftime("%H:%M", when)
+    return time.strftime("%d.%m %H:%M", when)
+def bar(fraction, width=10):
+    """Text gauge for a 0..1 utilization value."""
+    fraction = min(1.0, max(0.0, float(fraction or 0)))
+    filled = int(round(fraction * width))
+    return "█" * filled + "░" * (width - filled)
+def signal_group(proc, sig):
+    """Signal a child's whole process group, not just the child.
+
+    A bare proc.kill() reaches the CLI and nothing else: a build, an install or a
+    dev server the agent started keeps running, holding the working tree and the
+    port -- and a grandchild that still holds the stdout pipe can hang the parent
+    forever. Every child in this bot is spawned with start_new_session=True so it
+    leads its own group and this call can reach all of it.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass
 RUNNING = {}                       # engine -> {"proc": Popen, "job_id": int}
 run_lock = threading.Lock()
 def running_jobs():
     with run_lock:
         return {eng: info["job_id"] for eng, info in RUNNING.items()}
 START_TIME = time.time()
+def version():
+    """Short git revision of the checkout, for /start and /update."""
+    try:
+        out = subprocess.run(["git", "-C", SOURCE_DIR, "describe", "--always", "--dirty"],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or "?"
+    except (OSError, subprocess.SubprocessError):
+        return "?"

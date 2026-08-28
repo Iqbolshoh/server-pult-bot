@@ -1,6 +1,7 @@
 {
   "allowed_user_ids": [],
   "pairing_code": "",
+  "language": "uz",
   "workdir": "/var/www",
   "project_globs": [
     "/var/www/*",
@@ -9,6 +10,10 @@
   "engine": "claude",
   "model": "",
   "agy_model": "gemini-3.7-flash",
+  "effort": "",
+  "safe_mode": false,
+  "autocompact": "auto",
+  "stream_words": true,
   "permission_mode": "auto",
   "confirm_before_run": true,
   "job_timeout_sec": 3600,
@@ -16,5 +21,15 @@
   "max_turns": 60,
   "session_idle_reset_sec": 14400,
   "session_max_jobs": 15,
-  "local_api_port": 7799
+  "local_api_port": 7799,
+  "fallback_enabled": false,
+  "fallback_chain": [
+    { "engine": "claude", "model": "opus", "effort": "high" },
+    { "engine": "claude", "model": "sonnet", "effort": "high" },
+    { "engine": "agy", "model": "gemini-3.7-flash", "effort": "high" },
+    { "engine": "agy", "model": "gpt-oss-120b", "effort": "medium" }
+  ],
+  "catalogue_refresh_sec": 86400,
+  "limit_warn_utilization": 0.95,
+  "onboarded": false
 }

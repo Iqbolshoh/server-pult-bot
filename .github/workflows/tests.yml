@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      # No pip step on purpose: this project is stdlib-only, and the tests prove
+      # it still runs anywhere Python does.
+      - name: Run the test suite
+        run: python -m unittest discover -v
+      - name: Check the installer parses
+        run: bash -n install.sh

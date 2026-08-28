@@ -1,35 +1,33 @@
 """Loopback helper a running agent calls through curl."""
 
-import glob
-import html
 import http.server
 import json
-import mimetypes
-import os
-import re
-import shutil
-import signal
-import sqlite3
-import subprocess
-import sys
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
-import uuid
 
 from .core import log, running_jobs
 from .config import CFG, LOCAL_API_KEY
 from .telegram import send
 from .jobs import send_user_file
 
+# Any local process can reach the port. The key guards the write endpoints; this
+# guards everything else -- a compromised site user on a shared box should not be
+# able to hammer the port or enumerate it for free.
+RATE_WINDOW_SEC = 10
+RATE_MAX_HITS = 20
+_hits = []
+_hits_lock = threading.Lock()
+def rate_ok():
+    now = time.time()
+    with _hits_lock:
+        _hits[:] = [at for at in _hits if now - at < RATE_WINDOW_SEC]
+        if len(_hits) >= RATE_MAX_HITS:
+            return False
+        _hits.append(now)
+    return True
 class LocalAPIHandler(http.server.BaseHTTPRequestHandler):
-    """Loopback-only helper the running agents call through curl.
-
-    Any local process can reach the port, so the write endpoints need the
-    per-boot key that only the agents are told about.
-    """
+    """Loopback-only helper the running agents call through curl."""
 
     def log_message(self, *_args):
         pass
@@ -43,6 +41,8 @@ class LocalAPIHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if not rate_ok():
+            return self._reply(429, {"ok": False, "error": "too many requests"})
         parsed = urllib.parse.urlparse(self.path)
         params = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
         if parsed.path == "/health":
@@ -53,7 +53,7 @@ class LocalAPIHandler(http.server.BaseHTTPRequestHandler):
             return self._reply(503, {"ok": False, "error": "no recipient"})
         chat_id = CFG["allowed_user_ids"][0]
         if parsed.path == "/send-msg":
-            send(chat_id, (params.get("text") or "(bo'sh xabar)")[:3000])
+            send(chat_id, (params.get("text") or "…")[:3000])
             return self._reply(200, {"ok": True})
         if parsed.path == "/send-file":
             target = params.get("file")

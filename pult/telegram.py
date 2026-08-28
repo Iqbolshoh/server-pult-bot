@@ -1,21 +1,13 @@
 """Telegram API client and the durable outbox."""
 
-import glob
 import html
-import http.server
 import json
 import mimetypes
 import os
 import re
 import shutil
-import signal
-import sqlite3
-import subprocess
-import sys
-import threading
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 import uuid
 
