@@ -7,8 +7,8 @@ import subprocess
 import threading
 import time
 
-from .core import (INLINE_RESULT_LIMIT, PREVIEW_CHARS, RUNNING, UPLOAD_DIR, audit,
-                   fmt_clock, fmt_duration, fmt_tokens, h, log, run_lock, shutdown,
+from .core import (PREVIEW_CHARS, RULE, RUNNING, TELEGRAM_MAX_CHARS, UPLOAD_DIR, audit, card,
+                   fmt_clock, fmt_duration, fmt_tokens, h, log, quote, run_lock, shutdown,
                    signal_group)
 from .config import CFG, LOCAL_API_KEY
 from .i18n import t
@@ -68,10 +68,15 @@ def start_job(chat_id, prompt, note="", mode=None, approved=False, engine=None):
 
     banner = engine_banner(engine)
     if needs_ok:
-        send(chat_id,
-             t("job.confirm", banner=banner, id=job_id,
-               project=h(project_label(workdir)), prompt=h(prompt[:400])),
-             markup=confirm_menu(job_id), parse_mode="HTML")
+        send(chat_id, card(
+            t("job.confirm.head", banner=banner, id=job_id),
+            RULE,
+            t("job.project_line", project=h(project_label(workdir))),
+            "",
+            quote(h(prompt[:900]), expandable=len(prompt) > 220),
+            "",
+            t("job.confirm.ask"),
+        ), markup=confirm_menu(job_id), parse_mode="HTML")
         return job_id
 
     with db_lock:
@@ -81,13 +86,16 @@ def start_job(chat_id, prompt, note="", mode=None, approved=False, engine=None):
         ).fetchone()[0]
     head = t("job.accepted", banner=banner, id=job_id)
     if note:
-        head += f" · {h(note)}"
-    lines = [head, t("job.project_line", project=h(project_label(workdir)))]
-    if mode == "plan":
-        lines.append(t("job.plan_only"))
-    if ahead:
-        lines.append(t("job.ahead", count=ahead))
-    send(chat_id, "\n".join(lines), markup=job_menu(job_id), parse_mode="HTML")
+        head += f" · <i>{h(note)}</i>"
+    send(chat_id, card(
+        head,
+        RULE,
+        t("job.project_line", project=h(project_label(workdir))),
+        t("job.plan_only") if mode == "plan" else None,
+        t("job.ahead", count=ahead) if ahead else None,
+        "",
+        quote(h(prompt[:300]) + ("…" if len(prompt) > 300 else "")),
+    ), markup=job_menu(job_id), parse_mode="HTML")
     return job_id
 def approve_job(job_id, mode):
     """Move a pending job into the queue. Returns a status line for the user."""
@@ -114,7 +122,7 @@ def send_user_file(chat_id, target):
         return
     size = os.path.getsize(path)
     if size > 50 * 1024 * 1024:
-        send(chat_id, t("file.too_big", mb=size // 1048576))
+        send(chat_id, t("file.too_big", mb=size // 1048576), parse_mode="HTML")
         return
     audit(f"sent file {path!r}")
     send_document(chat_id, path, caption=path)
@@ -152,8 +160,9 @@ def deliver_full_result(chat_id, job_id):
         return
     state, result, prompt = row
     body = result or t("result.empty")
-    if len(body) <= INLINE_RESULT_LIMIT:
-        send(chat_id, f"<b>#{job_id}</b> [{h(state)}]\n\n{h(body)}", parse_mode="HTML")
+    inline = card(t("result.stored", id=job_id, state=h(state)), RULE, quote(h(body)))
+    if len(inline) <= TELEGRAM_MAX_CHARS:
+        send(chat_id, inline, parse_mode="HTML")
         return
     path = os.path.join(UPLOAD_DIR, f"job-{job_id}.md")
     with open(path, "w") as f:
@@ -308,7 +317,8 @@ def run_job(job_id, chat_id, prompt, workdir, engine, mode=None, attempt=0, step
     else:
         session_id, reset_reason = take_session(engine, workdir)
     if reset_reason:
-        send(chat_id, t("session.reset", engine=engine_label(engine), reason=reset_reason))
+        send(chat_id, t("session.reset", engine=engine_label(engine), reason=reset_reason),
+             parse_mode="HTML")
     started = time.time()
 
     prompt_prefix = system_prompt()
@@ -420,7 +430,7 @@ def run_job(job_id, chat_id, prompt, workdir, engine, mode=None, attempt=0, step
             and attempt == 0 and not capped and not limited and not blocked):
         log(f"job #{job_id} [{engine}]: resume failed, retrying with a fresh session")
         clear_session(engine, workdir)
-        send(chat_id, t("session.stale", id=job_id))
+        send(chat_id, t("session.stale", id=job_id), parse_mode="HTML")
         return run_job(job_id, chat_id, prompt, workdir, engine, mode=mode, attempt=1,
                        step=step, handover=None)
 
@@ -488,23 +498,31 @@ LIMIT_STDERR_PHRASES = ("usage limit", "rate limit", "429", "quota", "resource_e
 def looks_like_limit(text):
     low = (text or "").lower()
     return any(phrase in low for phrase in LIMIT_STDERR_PHRASES)
-def deliver_result(chat_id, job_id, text, elapsed, progress, turns, tokens, mode=None,
-                   engine="claude"):
-    planned = mode == "plan"
-    meta = [f"⏱ {elapsed}"]
+def result_header(job_id, engine, elapsed, turns, tokens, tools, planned):
+    """The two or three lines above every answer: who ran it, and what it cost."""
+    meta = [f"⏱ <b>{elapsed}</b>"]
     if turns:
         meta.append(f"🔄 {turns}")
     if tokens:
-        meta.append(f"🧮 {fmt_tokens(tokens)} token")
+        meta.append(f"🧮 {fmt_tokens(tokens)}")
     state_tag = (t("result.plan_tag", id=job_id) if planned
                  else t("result.done_tag", id=job_id))
-    header = f"{engine_banner(engine)} · {state_tag}\n" + " · ".join(meta)
-    tools = progress.summary()
-    if tools:
-        header += f"\n🔧 {h(tools)}"
+    return card(
+        f"{engine_banner(engine)} · {state_tag}",
+        RULE,
+        " · ".join(meta),
+        f"🔧 <i>{h(tools)}</i>" if tools else None,
+    )
+def deliver_result(chat_id, job_id, text, elapsed, progress, turns, tokens, mode=None,
+                   engine="claude"):
+    planned = mode == "plan"
+    header = result_header(job_id, engine, elapsed, turns, tokens, progress.summary(), planned)
 
-    if len(text) <= INLINE_RESULT_LIMIT:
-        send(chat_id, f"{header}\n\n{h(text)}",
+    # Fit is decided on the rendered message, not on the raw answer: escaping and
+    # the quote tags both add length, and a card split in half breaks its own HTML.
+    inline = card(header, "", quote(h(text)))
+    if len(inline) <= TELEGRAM_MAX_CHARS:
+        send(chat_id, inline,
              markup=result_menu(job_id, planned=planned, engine=engine), parse_mode="HTML")
         return
 
@@ -513,10 +531,14 @@ def deliver_result(chat_id, job_id, text, elapsed, progress, turns, tokens, mode
     with open(path, "w") as f:
         f.write(f"# {t('result.file_title', id=job_id)}\n\n{text}\n")
     preview = text[:PREVIEW_CHARS].rsplit("\n", 1)[0]
-    send(chat_id,
-         f"{header}\n\n{h(preview)}\n\n" + t("result.too_long", chars=len(text)),
-         markup=result_menu(job_id, full=True, planned=planned, engine=engine),
-         parse_mode="HTML")
+    send(chat_id, card(
+        header,
+        "",
+        quote(h(preview) + " …", expandable=True),
+        "",
+        t("result.too_long", chars=len(text)),
+    ), markup=result_menu(job_id, full=True, planned=planned, engine=engine),
+        parse_mode="HTML")
     send_document(chat_id, path, caption=t("result.file_caption", id=job_id))
 TOOL_LABEL_KEYS = {
     # Claude Code
@@ -533,6 +555,8 @@ TOOL_LABEL_KEYS = {
 def tool_label(name):
     key = TOOL_LABEL_KEYS.get(name)
     return t(f"tool.{key}") if key else name
+# A card that never changes looks stuck; the glyph turns on every edit.
+SPINNER = "◐◓◑◒"
 class ProgressReporter:
     """Live progress in one edited message. Gives up quietly when Telegram is down.
 
@@ -555,6 +579,7 @@ class ProgressReporter:
         self.limit_note = ""
         self.message_id = None
         self.last_update = 0.0
+        self.frame = 0
 
     def _tick(self, force=False):
         now = time.time()
@@ -614,22 +639,27 @@ class ProgressReporter:
         return words[-180:]
 
     def _render(self):
-        lines = [t("progress.head", banner=engine_banner(self.engine), id=self.job_id),
-                 t("progress.where", project=h(project_label(self.workdir)),
-                   elapsed=fmt_duration(time.time() - self.started))]
-        if self.last_detail:
-            lines.append(f"🔧 {h(self.last_detail)}")
+        self.frame += 1
+        detail = ""
         tail = self._tail()
         if tail:
-            lines.append(f"💬 {h(tail)}")
+            detail = f"💬 <i>{h(tail)}</i>"
         elif self.thinking:
-            lines.append(t("progress.thinking"))
-        elif not self.last_detail and self.status:
-            lines.append(t("progress.status", status=h(self.status)))
-        lines.append(t("progress.steps", count=len(self.tools)))
-        if self.limit_note:
-            lines.append(self.limit_note)
-        params = {"text": "\n".join(lines), "parse_mode": "HTML",
+            detail = t("progress.thinking")
+        elif self.last_detail:
+            detail = f"🔧 <i>{h(self.last_detail)}</i>"
+        elif self.status:
+            detail = t("progress.status", status=h(self.status))
+        text = card(
+            t("progress.head", banner=engine_banner(self.engine), id=self.job_id,
+              spinner=SPINNER[self.frame % len(SPINNER)]),
+            t("progress.where", project=h(project_label(self.workdir)),
+              elapsed=fmt_duration(time.time() - self.started), count=len(self.tools)),
+            f"🔧 <i>{h(self.last_detail)}</i>" if (tail and self.last_detail) else None,
+            detail or None,
+            self.limit_note or None,
+        )
+        params = {"text": text, "parse_mode": "HTML",
                   "reply_markup": job_menu(self.job_id)}
         if self.message_id is None:
             res = api_try("sendMessage", dict(params, chat_id=self.chat_id), timeout=10)

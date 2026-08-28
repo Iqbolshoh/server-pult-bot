@@ -11,8 +11,8 @@ import subprocess
 import time
 import urllib.request
 
-from .core import (BASE_DIR, CONFIG_PATH, DB_PATH, ENV_PATH, START_TIME, bar, fmt_duration,
-                   fmt_tokens, fmt_when, h, running_jobs, version)
+from .core import (BASE_DIR, CONFIG_PATH, DB_PATH, ENV_PATH, RULE, START_TIME, THIN_RULE, bar,
+                   card, fmt_duration, fmt_tokens, fmt_when, h, quote, running_jobs, version)
 from .config import CFG, config_problems
 from .i18n import available_languages, current_language, language_name, t
 from .db import db, db_lock, meta_get
@@ -26,40 +26,43 @@ from .projects import current_project, project_label
 
 def engine_text():
     live = running_jobs()
-    lines = [t("engine.title"), ""]
+    lines = [t("engine.title"), RULE]
     for eng in ENGINE_ORDER:
         mark = " ✅" if CFG["engine"] == eng else ""
         busy = (t("engine.busy", id=live[eng]) if eng in live else t("engine.idle"))
         lines.append(f"<b>{h(ENGINES[eng]['label'])}</b>{mark}")
-        lines.append(f"   ⚙️ {h(engine_model_label(eng))} · {busy}")
+        lines.append(f"   ⚙️ <b>{h(engine_model_label(eng))}</b> · {busy}")
         until = cooldown_until(eng)
         if until:
             lines.append("   " + t("engine.cooling", clock=fmt_when(until)))
         if not engine_path(eng):
             lines.append("   " + t("engine.not_installed", binary=h(CFG[ENGINES[eng]["bin_key"]])))
-    lines += ["", t("engine.current", choice=h(engine_choice_label())), "",
-              t("engine.both_help"), "", t("engine.prefix_help")]
+        lines.append("")
+    lines += [t("engine.current", choice=h(engine_choice_label())), THIN_RULE,
+              quote(t("engine.both_help")), t("engine.prefix_help")]
     return "\n".join(lines)
 def model_text():
-    lines = [t("model.title"), ""]
+    lines = [t("model.title"), RULE]
     for eng in ENGINE_ORDER:
         lines.append(f"<b>{h(ENGINES[eng]['label'])}</b>")
         for entry in engine_models(eng):
-            mark = " ✅" if entry["id"] == engine_model(eng) else ""
+            chosen = entry["id"] == engine_model(eng)
             desc = model_desc(entry) or ", ".join(entry.get("efforts") or []) or "—"
-            lines.append(f"• {h(entry_label(entry))}{mark} — <i>{h(desc)}</i>")
-        lines.append("")
+            bullet = "▸" if chosen else "·"
+            name = f"<b>{h(entry_label(entry))}</b> ✅" if chosen else h(entry_label(entry))
+            lines.append(f"{bullet} {name}\n   <i>{h(desc)}</i>")
+        lines.append(THIN_RULE)
     age = catalogue_age()
     lines.append(t("model.catalogue_fresh", age=fmt_duration(age)) if age is not None
                  else t("model.catalogue_missing"))
     lines.append(t("model.effort_line", effort=h(effort_label())))
     return "\n".join(lines)
 def effort_text():
-    lines = [t("effort.title"), "", t("effort.explain"), ""]
+    lines = [t("effort.title"), RULE]
     for eng in ENGINE_ORDER:
         lines.append(t("effort.engine_line", engine=engine_label(eng),
                        model=h(engine_model_label(eng)), effort=h(effort_label(eng))))
-    lines += ["", t("effort.range")]
+    lines += [THIN_RULE, t("effort.range"), "", quote(t("effort.explain"))]
     return "\n".join(lines)
 def help_text():
     return t("help.body")
@@ -127,9 +130,9 @@ def limit_text():
             (today,),
         ).fetchall()
 
-    lines = [t("limit.title"), ""] + limit_gauges()
-    lines += ["", t("limit.chain", state=(t("word.on") if failover.enabled()
-                                          else t("word.off")))]
+    lines = [t("limit.title"), RULE] + limit_gauges()
+    lines += [THIN_RULE, t("limit.chain", state=(t("word.on") if failover.enabled()
+                                                 else t("word.off")))]
     lines += ["", t("limit.today", day=h(today))]
     stats = {eng: (0, 0, 0) for eng in ENGINE_ORDER}
     for eng, count, turns, tokens in per_engine:
@@ -158,15 +161,15 @@ def limit_text():
                    idle=fmt_duration(idle)) if used else t("limit.context_fresh"))
         lines.append("   " + t("limit.context_line", engine=engine_label(eng), state=state))
 
-    lines += ["", t("limit.caps", turns=CFG["max_turns"],
-                    minutes=CFG["job_timeout_sec"] // 60,
-                    autocompact=CFG["autocompact"] or t("word.off")),
+    lines += [THIN_RULE, t("limit.caps", turns=CFG["max_turns"],
+                           minutes=CFG["job_timeout_sec"] // 60,
+                           autocompact=CFG["autocompact"] or t("word.off")),
               t("limit.models", claude=h(engine_model_label("claude")),
                 agy=h(engine_model_label("agy")), effort=h(effort_label())),
-              "", t("limit.footnote")]
+              "", quote(t("limit.footnote"))]
     return "\n".join(lines)
 def fallback_text():
-    lines = [t("fallback.title"), "",
+    lines = [t("fallback.title"), RULE,
              t("fallback.state", state=(t("word.on") if failover.enabled()
                                         else t("word.off"))), ""]
     steps = failover.chain()
@@ -179,10 +182,10 @@ def fallback_text():
             "SELECT id,engine,step FROM jobs WHERE state IN ('queued','running') AND step>0"
         ).fetchall()
     if hopped:
-        lines.append("")
+        lines.append(THIN_RULE)
         for jid, eng, step in hopped:
             lines.append(t("fallback.live", id=jid, engine=engine_label(eng), step=step + 1))
-    lines += ["", t("fallback.explain")]
+    lines += ["", quote(t("fallback.explain"), expandable=True)]
     return "\n".join(lines)
 def language_text():
     return t("language.body", current=language_name(current_language()),
@@ -192,12 +195,12 @@ def history_text():
         rows = db.execute(
             "SELECT id, prompt, engine FROM jobs ORDER BY id DESC LIMIT 15"
         ).fetchall()
+    lines = [t("history.title"), RULE]
     if not rows:
-        return t("history.empty")
-    lines = [t("history.title"), ""]
+        return "\n".join(lines + [t("history.empty")])
     for jid, prompt, engine in rows:
-        lines.append(f"<b>#{jid}</b> {h(engine_label(engine))} · {h(prompt[:100])}")
-    lines.append("\n" + t("history.hint"))
+        lines.append(f"<b>#{jid}</b> {h(engine_label(engine))}\n   <i>{h(prompt[:100])}</i>")
+    lines += [THIN_RULE, t("history.hint")]
     return "\n".join(lines)
 def ls_text(target):
     """Directory listing -- no model tokens spent."""
@@ -246,7 +249,7 @@ def status_text():
             "SELECT COUNT(*), COALESCE(SUM(tokens),0) FROM jobs WHERE created > ?",
             (time.time() - 86400,),
         ).fetchone()
-    lines = [t("status.title"), ""]
+    lines = [t("status.title"), RULE]
     if live_rows:
         for jid, prompt, started, eng, step in live_rows:
             elapsed = fmt_duration(time.time() - (started or time.time()))
@@ -254,11 +257,12 @@ def status_text():
             if step:
                 head += " " + t("status.chain_step", step=step + 1)
             lines.append(head)
-            lines.append(f"   {h(prompt[:110])}")
+            lines.append(quote(h(prompt[:150])))
         if len(live_rows) > 1:
             lines.append(t("status.parallel"))
     else:
         lines.append(t("status.idle"))
+    lines.append(THIN_RULE)
     with db_lock:
         per_engine = dict(db.execute(
             "SELECT engine, COUNT(*) FROM jobs WHERE state='queued' GROUP BY engine"
@@ -281,6 +285,7 @@ def status_text():
         until = cooldown_until(eng)
         if until:
             lines.append(t("status.cooling", engine=engine_label(eng), clock=fmt_when(until)))
+    lines.append(THIN_RULE)
     lines.append(t("status.day", jobs=today[0], tokens=fmt_tokens(today[1])))
     lines.append(t("status.uptime", uptime=fmt_duration(time.time() - START_TIME)))
     return "\n".join(lines)
@@ -290,18 +295,18 @@ def jobs_text():
             "SELECT id,state,created,finished,prompt,project,engine FROM jobs "
             "ORDER BY id DESC LIMIT 10"
         ).fetchall()
-    if not rows:
-        return t("jobs.empty")
     icons = {"pending": "❓", "queued": "⏳", "running": "▶️",
              "done": "✅", "failed": "❌", "cancelled": "🛑"}
-    out = [t("jobs.title"), ""]
+    out = [t("jobs.title"), RULE]
+    if not rows:
+        return "\n".join(out + [t("jobs.empty")])
     for jid, state, created, finished, prompt, project, engine in rows:
         dur = fmt_duration((finished or time.time()) - created)
         tag = project_label(project or "")
         out.append(f"{icons.get(state, '•')} <b>#{jid}</b> {h(engine_label(engine))} · "
-                   f"{dur} · {h(tag)}")
-        out.append(f"   {h(prompt[:80])}")
-    out.append("\n" + t("jobs.hint"))
+                   f"<i>{dur} · {h(tag)}</i>")
+        out.append(f"   <i>{h(prompt[:80])}</i>")
+    out += [THIN_RULE, t("jobs.hint")]
     return "\n".join(out)
 def sh(cmd, default="—", timeout=10):
     try:
@@ -353,17 +358,17 @@ def server_text():
             "SELECT engine, COUNT(*) FROM jobs WHERE state='running' GROUP BY engine"
         ).fetchall())
 
-    lines = [t("server.title"), "",
+    lines = [t("server.title"), RULE,
              t("server.uptime", value=h(one("UP"))),
              t("server.load", value=h(one("LOAD")), cores=os.cpu_count() or 1),
              t("server.ram", value=h(one("MEM"))),
              t("server.swap", value=h(one("SWAP"))),
              t("server.disk", value=h(one("DISK")), inodes=h(one("INODE"))),
-             "", t("server.services")]
+             THIN_RULE, t("server.services")]
     lines += ["  " + h(s) for s in services] or ["  —"]
     if facts.get("BOT"):
-        lines += ["", t("server.bot")] + ["  " + h(b) for b in facts["BOT"]]
-    lines += ["", t("server.jobs")]
+        lines += [THIN_RULE, t("server.bot")] + ["  " + h(b) for b in facts["BOT"]]
+    lines += [THIN_RULE, t("server.jobs")]
     for eng in ENGINE_ORDER:
         count = per_engine.get(eng, 0)
         state = (t("server.jobs_running", count=count) if count else t("server.jobs_idle"))
@@ -383,7 +388,7 @@ def engine_logged_in(engine):
 def doctor_lines():
     """Why it is not working, answered without an SSH session."""
     ok, bad, warn = t("doctor.ok"), t("doctor.bad"), t("doctor.warn")
-    lines = [t("doctor.title"), "", t("doctor.version", version=h(version())), ""]
+    lines = [t("doctor.title"), RULE, t("doctor.version", version=h(version())), ""]
 
     for problem in config_problems():
         lines.append(f"{bad} {h(problem)}")

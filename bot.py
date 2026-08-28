@@ -84,8 +84,8 @@ def main():
         if requeued:
             note += " " + t("boot.requeued", count=requeued)
         for uid in CFG["allowed_user_ids"]:
-            send(uid, note, markup=main_reply_kb())
-            send(uid, t("menu.prompt"), markup=main_menu())
+            send(uid, note, markup=main_reply_kb(), parse_mode="HTML")
+            send(uid, t("menu.prompt"), markup=main_menu(), parse_mode="HTML")
 
     threading.Thread(target=publish_commands, daemon=True).start()
     threading.Thread(target=refresh_models, name="catalogue", daemon=True).start()

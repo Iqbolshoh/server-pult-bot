@@ -108,7 +108,7 @@ def handle_update(update):
         return
 
     if not text:
-        send(chat_id, t("error.unsupported_message"))
+        send(chat_id, t("error.unsupported_message"), parse_mode="HTML")
         return
 
     # Bottom-keyboard labels are commands wearing a nicer coat.
@@ -121,7 +121,7 @@ def handle_update(update):
     # "c: ...", "a: ...", "b: ..." pick an engine for this one message only.
     engine, text = split_engine_prefix(text)
     if not text:
-        send(chat_id, t("error.empty_task"))
+        send(chat_id, t("error.empty_task"), parse_mode="HTML")
         return
 
     start_job(chat_id, text, engine=engine)
@@ -141,7 +141,7 @@ def handle_attachment(chat_id, msg, attachment, caption):
     try:
         path = download_telegram_file(file_id, filename)
     except Exception as e:
-        send(chat_id, t("error.download_failed", error=e))
+        send(chat_id, t("error.download_failed", error=h(e)), parse_mode="HTML")
         return
 
     group_id = msg.get("media_group_id")
@@ -195,7 +195,7 @@ def handle_command(chat_id, text):
         if not CFG["onboarded"]:
             begin_onboarding(chat_id)
         else:
-            send(chat_id, t("menu.prompt"), markup=main_menu())
+            send(chat_id, t("menu.prompt"), markup=main_menu(), parse_mode="HTML")
 
     elif cmd in ("/setup", "/onboard"):
         begin_onboarding(chat_id)
@@ -204,13 +204,14 @@ def handle_command(chat_id, text):
         send(chat_id, help_text(), markup=back_menu(), parse_mode="HTML")
 
     elif cmd == "/menu":
-        send(chat_id, t("menu.prompt"), markup=main_menu())
+        send(chat_id, t("menu.prompt"), markup=main_menu(), parse_mode="HTML")
 
     elif cmd == "/keyboard":
-        send(chat_id, t("keyboard.restored"), markup=main_reply_kb())
+        send(chat_id, t("keyboard.restored"), markup=main_reply_kb(), parse_mode="HTML")
 
     elif cmd == "/ping":
-        send(chat_id, t("ping", uptime=fmt_duration(time.time() - START_TIME)))
+        send(chat_id, t("ping", uptime=fmt_duration(time.time() - START_TIME)),
+             parse_mode="HTML")
 
     elif cmd == "/new":
         clear_all_sessions(current_project())
@@ -284,7 +285,7 @@ def handle_command(chat_id, text):
         valid = ["auto", "acceptEdits", "plan", "manual", "dontAsk", "bypassPermissions"]
         if arg:
             if arg not in valid:
-                send(chat_id, t("mode.usage", modes=", ".join(valid)))
+                send(chat_id, t("mode.usage", modes=", ".join(valid)), parse_mode="HTML")
                 return
             CFG["permission_mode"] = arg
             save_config()
@@ -311,7 +312,7 @@ def handle_command(chat_id, text):
                 if only_engine is None:
                     send(chat_id, t("cancel.usage"), parse_mode="HTML")
                     return
-        send(chat_id, do_cancel(target, only_engine))
+        send(chat_id, do_cancel(target, only_engine), parse_mode="HTML")
 
     elif cmd == "/settings":
         send(chat_id, settings_text(), markup=settings_menu(), parse_mode="HTML")
@@ -364,7 +365,7 @@ def handle_command(chat_id, text):
 
     elif cmd == "/restart":
         # Supervisor restarts us (autorestart=true); a running job is requeued on start.
-        send(chat_id, t("restart.notice"))
+        send(chat_id, t("restart.notice"), parse_mode="HTML")
         threading.Timer(2.0, lambda: (shutdown.set(), do_cancel())).start()
 
     else:
@@ -499,7 +500,7 @@ def handle_callback(query):
         if code in available_languages():
             set_language(code)
             answer(language_name(code))
-            send(chat_id, t("keyboard.restored"), markup=main_reply_kb())
+            send(chat_id, t("keyboard.restored"), markup=main_reply_kb(), parse_mode="HTML")
         screen(language_text(), language_menu())
     elif data == "fallback":
         answer()

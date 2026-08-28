@@ -389,6 +389,26 @@ re-globbing on every keyboard render, and token accounting now records on every
 job — agy's mid-run `usage` is kept too, so a killed run still accounts for what
 it spent.
 
+**Message formatting pass (owner's call, same evening).** The screens were plain
+text with a few bold tags; they now share one visual language, and it is enforced
+by tests rather than by discipline:
+
+- `core.py` gained `RULE` / `THIN_RULE`, `card()` (join lines, `None` drops one,
+  `""` keeps a blank), `quote()` (Telegram `<blockquote>`, expandable when long)
+  and `kv()`.
+- Every card is head → rule → labelled rows → quoted body: the task on a confirm
+  card, the model's answer on a result card, the running prompt on `/status`, and
+  the explanatory paragraph at the foot of each settings screen.
+- The progress card carries a spinner glyph that turns on every edit, so a long
+  job no longer looks frozen, and it puts the model's own words above the tool
+  name when it has them.
+- Fit is now decided on the *rendered* message rather than the raw answer: a card
+  split across two Telegram messages would break its own HTML and get retried as
+  plain text, silently losing the formatting.
+- `tests/test_screens.py` renders all thirteen screens in all three languages and
+  asserts every tag is closed, only Telegram's tags are used, no `⟪missing.key⟫`
+  survives, each screen carries its rule, and none is too long for one message.
+
 **Deliberately not done, and why:**
 
 - **Phase 3 (licensing) and Phase 4 (distribution)** wait on §8. Both branch on

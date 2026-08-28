@@ -456,16 +456,23 @@ def engine_choice_label():
 def engine_model_label(engine):
     return model_label(engine, engine_model(engine))
 def effort_label(engine=None):
-    """What the effort dial reads as, including the clamp when one applies."""
+    """What the dial reads as -- including the clamp, and agy's forced default.
+
+    Without an engine this is the dial itself. With one it is what that engine
+    will actually be given, which is not the same thing: agy has no "let the
+    engine decide", so an empty dial still resolves to a real level there.
+    """
     effort = CFG["effort"]
+    if not engine:
+        return effort or t("effort.default")
+    model = engine_model(engine)
+    level = (agy_effort_for(model, effort) if engine == "agy"
+             else clamp_effort(engine, effort, model))
+    if not level:
+        return t("effort.unsupported") if effort else t("effort.default")
     if not effort:
-        return t("effort.default")
-    if engine:
-        level = clamp_effort(engine, effort, engine_model(engine))
-        if level and level != effort:
-            return f"{effort} → {level}"
-        return level or t("effort.unsupported")
-    return effort
+        return t("effort.auto", level=level)
+    return level if level == effort else f"{effort} → {level}"
 LIMIT_KEY = "limit:{}"
 COOLDOWN_KEY = "cooldown:{}"
 def remember_limit(engine, info):

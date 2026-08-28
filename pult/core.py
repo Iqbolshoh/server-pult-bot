@@ -22,6 +22,11 @@ ENV_PATH = os.path.join(BASE_DIR, ".env")
 # Translations ship with the code, never with the state directory.
 LOCALES_DIR = os.path.join(SOURCE_DIR, "locales")
 TELEGRAM_MAX_CHARS = 3800
+# One visual language for every card the bot sends. Telegram's HTML is narrow --
+# bold, italic, code, pre and blockquote -- so structure has to come from rules,
+# quoted bodies and a consistent order of lines.
+RULE = "━━━━━━━━━━━━━━━━"
+THIN_RULE = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
 POLL_TIMEOUT = 50
 INLINE_RESULT_LIMIT = 3400  # longer results are delivered as a .md file
 PREVIEW_CHARS = 700
@@ -39,6 +44,20 @@ def audit(line):
         pass
 def h(text):
     return html.escape(str(text))
+def quote(escaped_text, expandable=False):
+    """Wrap already-escaped text in a Telegram blockquote.
+
+    A quoted body is what separates the model's answer from the bot's own words
+    at a glance; expandable keeps a long one from swallowing the screen.
+    """
+    tag = "<blockquote expandable>" if expandable else "<blockquote>"
+    return f"{tag}{escaped_text}</blockquote>"
+def card(*parts):
+    """Join the lines of a card. None drops a line; "" keeps a blank one."""
+    return "\n".join(part for part in parts if part is not None)
+def kv(icon, label, value):
+    """One 'icon label: value' row, the same shape on every screen."""
+    return f"{icon} {label}: <b>{value}</b>"
 def fmt_tokens(count):
     """1234 -> '1.2K', 4500000 -> '4.5M'. Limits are counted in tokens, not money."""
     count = int(count or 0)
