@@ -1,6 +1,8 @@
 {
   "boot.requeued": "{count} ta uzilib qolgan ish navbatga qaytarildi.",
   "boot.started": "🤖 <b>Bot ishga tushdi.</b>",
+  "bot.description": "Serveringizni Telegramdan boshqaring. Ikkita sun'iy intellekt dvigateli — Claude Code va Antigravity — loyihalaringizda vazifalarni bajaradi: kod yozadi, xatolarni tuzatadi, buyruq ishga tushiradi va natijani shu yerda ko'rsatadi.\n\nIkkalasini bir vaqtda ishlatish, biri limitga urilganda ikkinchisiga avtomatik o'tish, loyihalar orasida almashish va server holatini ko'rish — hammasi tugmalar orqali.",
+  "bot.short": "Serverni Telegramdan boshqaring: ikkita AI dvigateli, bitta pult.",
   "both.usage": "🤝 <b>Foydalanish</b>\n<code>/both nginx konfigini tekshir</code>",
   "btn.again": "🔁 Qayta",
   "btn.back": "⬅️ Orqaga",

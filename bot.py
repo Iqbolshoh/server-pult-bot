@@ -8,7 +8,9 @@ import threading
 
 from pult.core import CONFIG_PATH, log, shutdown, version
 from pult.config import CFG, config_problems, ensure_pairing_code, save_config
-from pult.i18n import available_languages, t
+from pult.db import meta_get, meta_set
+from pult.i18n import available_languages, current_language, t,\
+    telegram_language_code
 from pult.telegram import api_try, close_connections, send, sender
 from pult.engines import ENGINE_ORDER, refresh_catalogue
 from pult.projects import current_project
@@ -32,17 +34,59 @@ BOT_COMMANDS = [
     ("ping", "cmd.ping"), ("update", "cmd.update"), ("restart", "cmd.restart"),
     ("help", "cmd.help"),
 ]
+def command_list(lang):
+    return [{"command": name, "description": t(key, lang=lang)}
+            for name, key in BOT_COMMANDS]
 def publish_commands():
-    """Tell Telegram the command list -- once per language it knows about."""
-    for lang in available_languages() or [None]:
-        params = {"commands": [{"command": name, "description": t(key, lang=lang)}
-                               for name, key in BOT_COMMANDS]}
-        if lang:
-            params["language_code"] = lang
+    """Tell Telegram the command list -- per language, and for everyone else.
+
+    The default scope (no language_code) is not optional: it is what a user
+    whose Telegram is set to German or Turkish sees, and without it that list
+    keeps whatever was last written to it -- which is how this bot ended up
+    offering 26 commands to most of the world and 32 to the four locales.
+    """
+    scopes = [(None, current_language())]
+    scopes += [(telegram_language_code(lang), lang) for lang in available_languages()]
+
+    for code, lang in scopes:
+        params = {"commands": command_list(lang)}
+        if code:
+            params["language_code"] = code
         if not api_try("setMyCommands", params, timeout=15):
-            log(f"could not publish the command list ({lang})")
+            log(f"could not publish the command list ({code or 'default'})")
             return
-    log("command list published")
+    log(f"command list published ({len(scopes)} scopes)")
+def publish_profile():
+    """The description and the one-liner above it, in every language.
+
+    Both were empty until now, in every language -- so the profile card, the
+    thing a new operator reads before pressing Start, said nothing at all.
+    Telegram caps the description at 512 characters and the short one at 120;
+    the locale test holds both to that.
+
+    Deliberately not setMyName: the name is the product's, not a translation,
+    and Telegram rate-limits name changes far harder than these two.
+    """
+    fingerprint = str([(lang, t("bot.description", lang=lang), t("bot.short", lang=lang))
+                       for lang in available_languages()] + [current_language()])
+    if meta_get("profile_fingerprint") == fingerprint:
+        return
+
+    scopes = [(None, current_language())]
+    scopes += [(telegram_language_code(lang), lang) for lang in available_languages()]
+
+    for code, lang in scopes:
+        for method, field, key in (("setMyDescription", "description", "bot.description"),
+                                   ("setMyShortDescription", "short_description", "bot.short")):
+            params = {field: t(key, lang=lang)}
+            if code:
+                params["language_code"] = code
+            if not api_try(method, params, timeout=15):
+                log(f"could not publish {field} ({code or 'default'})")
+                return
+
+    meta_set("profile_fingerprint", fingerprint)
+    log(f"profile published ({len(scopes)} scopes)")
 def refresh_models():
     try:
         refresh_catalogue()
@@ -87,6 +131,7 @@ def main():
             send(uid, note, markup=main_reply_kb(), parse_mode="HTML")
 
     threading.Thread(target=publish_commands, daemon=True).start()
+    threading.Thread(target=publish_profile, daemon=True).start()
     threading.Thread(target=refresh_models, name="catalogue", daemon=True).start()
 
     threads = [

@@ -426,6 +426,25 @@ by tests rather than by discipline:
 - **`--agent`, `--json-schema`, MCP.** Real flags, no demand: nothing in the bot
   consumes structured output, and a buyer configures MCP in their own CLI.
 
+**2026-08-31 (evening) — the four languages stopped at the bot's own front
+door.** Asking Telegram what it actually holds — rather than reading the code
+that sets it — found three things, all of them invisible from inside the repo.
+
+| Item | What was wrong | Now |
+|---|---|---|
+| Tajik command list | published under `tj`, the name of our locale file. Telegram — and every Tajik client — says `tg`, so `getMyCommands(tg)` came back **empty**: not one Tajik user has ever seen a translated command | published under `tg`; `telegram_language_code()` owns the mapping |
+| Default command scope | `publish_commands()` looped over the locales and never published the scope with **no** `language_code`, so a user whose Telegram is German or Turkish kept a list last written by hand: **26 commands** against today's 32 | published from the operator's own language; five scopes in total |
+| Profile texts | `description` and `short_description` were **empty in every language** — the "What can this bot do?" card a buyer reads before pressing Start said nothing | `publish_profile()` sets both, per language, guarded by a fingerprint in `meta` so a restart spends no calls. `setMyName` is deliberately left alone: the name is the product's, and Telegram rate-limits it hard |
+
+`tests/test_profile.py` (9 tests) locks all three: the `tj → tg` mapping, the
+default scope, no scope published under a locale *file* name, every published
+list carrying every command with no `⟪missing.key⟫`, both texts inside
+Telegram's 512/120 limits in all four locales, and the second publish being a
+no-op. 150 → **159 tests**.
+
+Verified live against the API after the restart: 32 commands in each of the
+five scopes, and a description in uz/ru/en/tg.
+
 **2026-08-31 — Tajik was shipped as a copy of Russian; now it is a translation.**
 `locales/tj.json` was added with 321 keys, and every one of its values was the
 Russian string. Every locale test passed: the key sets matched, the placeholders

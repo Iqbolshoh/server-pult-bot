@@ -1,6 +1,8 @@
 {
   "boot.requeued": "{count} interrupted job(s) went back into the queue.",
   "boot.started": "🤖 <b>The bot is up.</b>",
+  "bot.description": "Run your server from Telegram. Two AI engines — Claude Code and Antigravity — do the work inside your projects: write code, fix bugs, run commands and report back here.\n\nUse both at once, hop to the other one automatically when one hits its limit, switch between projects and read the server's health — all from buttons.",
+  "bot.short": "Run your server from Telegram: two AI engines, one console.",
   "both.usage": "🤝 <b>Usage</b>\n<code>/both check the nginx config</code>",
   "btn.again": "🔁 Again",
   "btn.back": "⬅️ Back",

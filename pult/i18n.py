@@ -13,6 +13,14 @@ from .config import CFG
 
 FALLBACK_LANG = "en"
 LANGUAGE_NAMES = {"uz": "🇺🇿 O'zbekcha", "ru": "🇷🇺 Русский", "en": "🇬🇧 English", "tj": "🇹🇯 Тоҷикӣ"}
+
+# Our locale files are named the way the Vexa sites name theirs, which is not
+# always the code Telegram uses. Tajik is `tg` in ISO 639-1 and that is what a
+# Tajik client sends; publishing anything under `tj` reaches nobody.
+TELEGRAM_LANGUAGE_CODES = {"tj": "tg"}
+def telegram_language_code(lang):
+    """The code Telegram knows this locale by."""
+    return TELEGRAM_LANGUAGE_CODES.get(lang, lang)
 _bundles = {}
 _missing = set()
 def available_languages():
