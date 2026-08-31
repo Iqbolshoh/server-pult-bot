@@ -10,6 +10,10 @@ db_lock = threading.Lock()
 db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
 
 db.execute("PRAGMA journal_mode=WAL")
+# WAL already guarantees durability across a crash of this process; NORMAL only
+# gives up the fsync per commit, which is what makes every job state change cost
+# a disk flush on a box running sixteen other sites.
+db.execute("PRAGMA synchronous=NORMAL")
 
 db.executescript(
     """
@@ -69,6 +73,21 @@ ensure_columns("jobs", {"project": "TEXT", "cost": "REAL", "turns": "INTEGER", "
 
 ensure_columns("outbox", {"kind": "TEXT NOT NULL DEFAULT 'text'", "parse_mode": "TEXT",
                           "markup": "TEXT", "file_path": "TEXT"})
+
+# After ensure_columns, never before it: these name columns that an older
+# state.db only gains in the migration above.
+db.executescript(
+    """
+    -- The worker loop asks "what is next for this engine" on every poll and the
+    -- status screen counts by state; both scan the whole table without this.
+    -- Covering (state, engine, id) answers the queue pick from the index alone,
+    -- and ORDER BY id comes out for free.
+    CREATE INDEX IF NOT EXISTS idx_jobs_queue   ON jobs(state, engine, id);
+    -- Daily usage totals and the housekeeping delete both filter on created.
+    CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created);
+    """
+)
+db.commit()
 def meta_get(key, default=None):
     with db_lock:
         row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()

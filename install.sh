@@ -68,8 +68,12 @@ fi
 TOKEN="$(ask 'Telegram bot token (from @BotFather)' "${BOT_TOKEN:-$CUR_TOKEN}")"
 [ -n "$TOKEN" ] || die "a bot token is required; get one from @BotFather"
 ADMIN="$(ask 'Your Telegram user id (blank = pair with a code later)' "${ADMIN_CHAT_ID:-$CUR_ADMIN}")"
-LANG_CODE="$(ask 'Language (uz / ru / en)' "${PULT_LANG:-$( [ -f "$HOME_DIR/config.json" ] && "$PYTHON" -c "import json;print(json.load(open('$HOME_DIR/config.json')).get('language','uz'))" || echo uz)}")"
-case "$LANG_CODE" in uz|ru|en) ;; *) warn "unknown language '$LANG_CODE', using uz"; LANG_CODE=uz ;; esac
+# The offer is whatever locales/ actually ships -- a hardcoded list here is how
+# Tajik came to be rejected by the installer on the day it was added.
+LANGS="$(cd "$HERE/locales" 2>/dev/null && ls *.json 2>/dev/null | sed 's/\.json$//' | tr '\n' ' ')"
+LANGS="${LANGS:-uz ru en}"
+LANG_CODE="$(ask "Language ($(echo $LANGS | sed 's/ / \/ /g'))" "${PULT_LANG:-$( [ -f "$HOME_DIR/config.json" ] && "$PYTHON" -c "import json;print(json.load(open('$HOME_DIR/config.json')).get('language','uz'))" || echo uz)}")"
+case " $LANGS " in *" $LANG_CODE "*) ;; *) warn "unknown language '$LANG_CODE', using uz"; LANG_CODE=uz ;; esac
 
 umask 077
 {

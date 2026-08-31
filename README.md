@@ -127,7 +127,7 @@ pult/jobs.py         the queue: one worker per engine, result delivery
 pult/handlers.py     updates -> commands, callbacks, jobs
 pult/localapi.py     loopback helper the agents call through curl
 pult/maintenance.py  periodic disk, database and catalogue upkeep
-locales/{uz,ru,en}.json
+locales/{uz,ru,en,tj}.json
 tests/               plain unittest, stdlib only; fixtures recorded from the CLIs
 ```
 

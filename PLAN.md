@@ -191,7 +191,7 @@ Concrete defects behind that table:
 > ✅ **Built and live, 2026-08-28.** Everything in this section is implemented:
 > `rate_limit_event` is read and stored, cooldowns are shared across jobs by
 > engine, the chain is walked forward once per job, the handover paragraph is
-> written in all three languages, every hop is announced, and `/limit` is built on
+> written in all four languages, every hop is announced, and `/limit` is built on
 > the real gauges. What is *not* yet proven is the hop itself firing in anger: no
 > window has run out since it shipped, and no quota-shaped agy failure has been
 > captured (§4.4 still holds — the allow-list stays narrow until one is).
@@ -334,7 +334,7 @@ supervisor since 18:29.
 |---|---|
 | `SERVER_PULT_HOME` | `core.BASE_DIR` honours it, `config.load_config()` no longer exits at import, `config_problems()` reports instead. The whole package now imports with no config at all — which is what made tests possible, and what makes `/doctor` able to explain a broken install |
 | Tests | `tests/`, plain `unittest`, stdlib only: engine event readers against **streams recorded from real runs of both CLIs**, catalogue parsing, effort clamping, model resolution, flag building, session expiry on both limits, cooldowns, chain walking, hop rules, handover text, outbox chunking and button placement, schema migration from a pre-`engine` `state.db` (in a subprocess, against a real old file), the private-chat guard, keyboard-label routing, and a process-group kill that proves a grandchild dies with its job |
-| Locale tests | key sets identical across uz/ru/en, every `t()` key in the source present in every file, placeholders identical per key, balanced HTML tags, no locale claiming a reserved placeholder name — the trap `Lang::has` set on the Laravel sites, closed here before it could open |
+| Locale tests | key sets identical across uz/ru/en/tj, every `t()` key in the source present in every file, placeholders identical per key, balanced HTML tags, no locale claiming a reserved placeholder name — the trap `Lang::has` set on the Laravel sites, closed here before it could open |
 | CI | `.github/workflows/tests.yml`: `python -m unittest discover` on 3.11 and 3.13, plus `bash -n install.sh`. No pip step, on purpose |
 | Fixtures | `tests/fixtures/{claude_stream.jsonl,agy_stream.jsonl,agy_models.txt}` — captured today, including a `rate_limit_event`, a `system/status`, a `text_delta`, a permission denial, and both a `SUCCESS` and a non-`SUCCESS` agy result |
 
@@ -405,7 +405,7 @@ by tests rather than by discipline:
 - Fit is now decided on the *rendered* message rather than the raw answer: a card
   split across two Telegram messages would break its own HTML and get retried as
   plain text, silently losing the formatting.
-- `tests/test_screens.py` renders all thirteen screens in all three languages and
+- `tests/test_screens.py` renders all thirteen screens in all four languages and
   asserts every tag is closed, only Telegram's tags are used, no `⟪missing.key⟫`
   survives, each screen carries its rule, and none is too long for one message.
 
@@ -425,6 +425,23 @@ by tests rather than by discipline:
   an ordinary failure, exactly as §4.4 argues.
 - **`--agent`, `--json-schema`, MCP.** Real flags, no demand: nothing in the bot
   consumes structured output, and a buyer configures MCP in their own CLI.
+
+**2026-08-31 — Tajik was shipped as a copy of Russian; now it is a translation.**
+`locales/tj.json` was added with 321 keys, and every one of its values was the
+Russian string. Every locale test passed: the key sets matched, the placeholders
+matched, the tags balanced. Nothing in the suite asked whether the file was in a
+different language, so the only thing that was actually wrong was the only thing
+nothing checked.
+
+| Item | What landed |
+|---|---|
+| `locales/tj.json` | All 321 keys translated into Tajik. 27 values stay identical to Russian on purpose: bare placeholders (`{engine} — {state}`), emoji-only markers (`✅`), and words spelled the same in both (`файл`, `веб`, `агент`) |
+| Copy guard | `DistinctTranslationTest`: no two locale files may be equal, and no two may share half their values. This is the test that would have caught it |
+| Language coverage | `test_four_languages_ship`, and the per-language check now walks `available_languages()` instead of a hardcoded `("uz","ru","en")` — a fifth locale is covered the day its file lands |
+| Test entry point | `unittest.main()` sat *above* `PlaceholderNameTest`, so running the file directly never ran that class. Moved to the bottom |
+| `install.sh` | Offered `uz / ru / en` and rejected `tj`, silently falling back to Uzbek. The offer is now read from `locales/`, so a new locale file is the whole change |
+| Indices | The previous commit said "Optimize DB indices" and added none. `idx_jobs_queue(state, engine, id)` turns the worker's per-poll queue pick into a covering-index search; `idx_jobs_created` serves the daily totals and the housekeeping delete. They are created **after** `ensure_columns()`, because they name `engine`, which an older `state.db` only gains in that migration |
+| `synchronous=NORMAL` | WAL already survives a crash of this process; NORMAL only drops the per-commit fsync, which every job state change was paying on a box running sixteen other sites |
 
 **2026-08-28 (late) — "the bot is slow": found, measured, fixed.** The operator
 reported slowness, errors, and one row of buttons too many. All three had a
@@ -548,7 +565,7 @@ proof.**
 
 ### Phase 2 ✅ — The product shell
 
-1. **i18n (P2).** `pult/i18n.py` + `locales/{uz,ru,en}.json`. Keys in English,
+1. **i18n (P2).** `pult/i18n.py` + `locales/{uz,ru,en,tj}.json`. Keys in English,
    values per language — this repo's code, comments and config stay English;
    only what a human reads in Telegram is translated. Uzbek is the reference
    locale because it is the one that exists; Russian is the market; English is
@@ -587,7 +604,7 @@ proof.**
 ### Phase 4 ⏳ — Distribution *(blocked on §8.3)*
 
 Landing page, README rewritten for a buyer rather than for its author, a 60-second
-demo video, install docs in three languages.
+demo video, install docs in four languages.
 
 ---
 
