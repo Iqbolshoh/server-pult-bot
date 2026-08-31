@@ -12,7 +12,7 @@ from .core import LOCALES_DIR, log
 from .config import CFG
 
 FALLBACK_LANG = "en"
-LANGUAGE_NAMES = {"uz": "🇺🇿 O'zbekcha", "ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
+LANGUAGE_NAMES = {"uz": "🇺🇿 O'zbekcha", "ru": "🇷🇺 Русский", "en": "🇬🇧 English", "tj": "🇹🇯 Тоҷикӣ"}
 _bundles = {}
 _missing = set()
 def available_languages():

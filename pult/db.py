@@ -7,7 +7,7 @@ import threading
 from .core import DB_PATH, log
 
 db_lock = threading.Lock()
-db = sqlite3.connect(DB_PATH, check_same_thread=False)
+db = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
 
 db.execute("PRAGMA journal_mode=WAL")
 
