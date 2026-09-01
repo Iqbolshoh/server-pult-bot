@@ -100,6 +100,12 @@ def meta_set(key, value):
             (key, str(value)),
         )
         db.commit()
+def meta_keys(prefix=""):
+    """Every key in `meta`, or every one under a prefix. Used by housekeeping."""
+    with db_lock:
+        rows = db.execute("SELECT key FROM meta WHERE key LIKE ? ORDER BY key",
+                          (prefix.replace("%", "") + "%",)).fetchall()
+    return [row[0] for row in rows]
 def meta_del(key):
     with db_lock:
         db.execute("DELETE FROM meta WHERE key=?", (key,))

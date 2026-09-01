@@ -202,6 +202,7 @@
   "job.engine_error": "{banner} · ⚠️ <b>#{id}</b> dvigatel xato qaytardi\n━━━━━━━━━━━━━━━━\n⏱ {elapsed}\n<blockquote>{detail}</blockquote>",
   "job.engine_missing": "{banner} · ❌ <b>#{id}</b> boshlanmadi\n━━━━━━━━━━━━━━━━\n<code>{binary}</code> serverda o'rnatilmagan.\n<i>/doctor buni ko'rsatadi.</i>",
   "job.execute_plan": "Yuqorida tuzgan rejangni tasdiqlayman — endi to'liq bajar.",
+  "job.expired": "⌛ <b>#{id}</b> eskirdi\n<i>{waited} javobsiz turdi va bekor qilindi. Hali kerak bo'lsa, qaytadan yuboring.</i>",
   "job.extra_file": "[Yana bir fayl: {path}]",
   "job.failed": "{banner} · ❌ <b>#{id}</b> bajarilmadi\n━━━━━━━━━━━━━━━━\n⏱ {elapsed}\n<pre>{detail}</pre>",
   "job.internal_error": "{banner} · ❌ <b>#{id}</b> ichki xato\n━━━━━━━━━━━━━━━━\n<pre>{error}</pre>",

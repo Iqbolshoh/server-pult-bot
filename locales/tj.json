@@ -202,6 +202,7 @@
   "job.engine_error": "{banner} · ⚠️ <b>#{id}</b> муҳаррик хато баргардонд\n━━━━━━━━━━━━━━━━\n⏱ {elapsed}\n<blockquote>{detail}</blockquote>",
   "job.engine_missing": "{banner} · ❌ <b>#{id}</b> оғоз нашуд\n━━━━━━━━━━━━━━━━\n<code>{binary}</code> дар сервер насб нашудааст.\n<i>/doctor-ро бубинед.</i>",
   "job.execute_plan": "Нақшаи дар боло тартибдодашударо тасдиқ мекунам — онро пурра иҷро кун.",
+  "job.expired": "⌛ <b>#{id}</b> кӯҳна шуд\n<i>{waited} бе ҷавоб монд ва бекор карда шуд. Агар ҳоло ҳам лозим бошад, дубора фиристед.</i>",
   "job.extra_file": "[Боз як файл: {path}]",
   "job.failed": "{banner} · ❌ <b>#{id}</b> иҷро нашуд\n━━━━━━━━━━━━━━━━\n⏱ {elapsed}\n<pre>{detail}</pre>",
   "job.internal_error": "{banner} · ❌ <b>#{id}</b> хатои дохилӣ\n━━━━━━━━━━━━━━━━\n<pre>{error}</pre>",

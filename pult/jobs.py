@@ -100,13 +100,27 @@ def start_job(chat_id, prompt, note="", mode=None, approved=False, engine=None):
     ), markup=job_menu(job_id), parse_mode="HTML")
     return job_id
 def approve_job(job_id, mode):
-    """Move a pending job into the queue. Returns a status line for the user."""
+    """Move a pending job into the queue. Returns a status line for the user.
+
+    A confirm card that was never pressed keeps its button forever, so a task
+    written days ago could still be launched against a server that has changed
+    underneath it. Past `pending_expiry_sec` the card is spent, not armed.
+    """
     with db_lock:
-        row = db.execute("SELECT state,engine FROM jobs WHERE id=?", (job_id,)).fetchone()
+        row = db.execute(
+            "SELECT state,engine,created FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
         if not row:
             return t("job.not_found", id=job_id)
         if row[0] != "pending":
             return t("job.already_state", id=job_id, state=h(row[0]))
+        waited = time.time() - (row[2] or 0)
+        if CFG["pending_expiry_sec"] and waited > CFG["pending_expiry_sec"]:
+            db.execute("UPDATE jobs SET state='cancelled', finished=? WHERE id=?",
+                       (time.time(), job_id))
+            db.commit()
+            audit(f"job#{job_id} expired unapproved after {int(waited)}s")
+            return t("job.expired", id=job_id, waited=fmt_duration(waited))
         db.execute("UPDATE jobs SET state='queued', mode=? WHERE id=?", (mode, job_id))
         db.commit()
     queue_ready(row[1]).set()

@@ -48,6 +48,10 @@ DEFAULT_CONFIG = {
     "system_prompt": "",
     # When true, every task waits for a button press before anything runs.
     "confirm_before_run": True,
+    # How long a confirm card stays pressable. A task nobody approved for a day
+    # was written for a server that has moved on since, so it expires instead of
+    # running whenever the button is finally noticed.
+    "pending_expiry_sec": 86400,
     "job_timeout_sec": 3600,
     # Hard stop for a run that keeps looping. Counted from assistant turns in the
     # stream, because this CLI has no --max-turns flag.

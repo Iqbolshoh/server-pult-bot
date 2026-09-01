@@ -202,6 +202,7 @@
   "job.engine_error": "{banner} · ⚠️ <b>#{id}</b> движок вернул ошибку\n━━━━━━━━━━━━━━━━\n⏱ {elapsed}\n<blockquote>{detail}</blockquote>",
   "job.engine_missing": "{banner} · ❌ <b>#{id}</b> не запущено\n━━━━━━━━━━━━━━━━\n<code>{binary}</code> не установлен на сервере.\n<i>Смотрите /doctor.</i>",
   "job.execute_plan": "Подтверждаю составленный выше план — выполни его полностью.",
+  "job.expired": "⌛ <b>#{id}</b> устарело\n<i>Ждало {waited} без ответа и было отменено. Отправьте заново, если ещё нужно.</i>",
   "job.extra_file": "[Ещё файл: {path}]",
   "job.failed": "{banner} · ❌ <b>#{id}</b> не выполнено\n━━━━━━━━━━━━━━━━\n⏱ {elapsed}\n<pre>{detail}</pre>",
   "job.internal_error": "{banner} · ❌ <b>#{id}</b> внутренняя ошибка\n━━━━━━━━━━━━━━━━\n<pre>{error}</pre>",

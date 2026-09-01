@@ -419,6 +419,28 @@ a start inside `boot_notice_cooldown_sec` (900s) stays quiet unless the operator
 asked for it (`/restart`, `/update` call `request_boot_notice()`) or the start
 had to requeue an interrupted job. `tests/test_boot.py` pins all five cases.
 
+**2026-09-01 (later) — the two rows nothing ever deleted.** Read off the live
+`state.db` rather than the source: `meta` held **31 rows**, and one job had been
+`pending` for **two and a half days**.
+
+| Item | What was wrong | Now |
+|---|---|---|
+| An immortal confirm card | the housekeeping delete only takes *finished* jobs, so a task nobody approved keeps its ▶️ button for good. Job #106 was still one press away from running a prompt written for a bot on a server that has changed twice since | `pending_expiry_sec` (24h). `approve_job()` refuses a spent card and says how long it waited; housekeeping cancels the backlog. The live #106 is `cancelled` |
+| `meta` only ever grew | a session is three rows per (engine, project) and `clear_session()` *blanks* them rather than dropping them, so a project deleted from the disk keeps its rows forever — `m.vexa.uz` still had three, a week after it was removed. Nothing had ever deleted from this table | `prune_meta()` drops sessions whose workdir is gone, cleared and idle-past-resuming contexts, spent cooldowns and the pre-engine keys. **31 → 6 rows** on the live database |
+| `onboard:step` | written at every wizard step and never read by anything | pruned with the rest |
+| `card` in `screens.py` | imported, unused — the one thing the C1 sweep left behind | removed; an AST scan says no other module has one |
+| `localapi.py` | the only module with **no test at all**, and the only port this bot opens | `tests/test_localapi.py` (9): /health is public on purpose, both write endpoints refuse a missing or wrong key, an unknown path is a 404 rather than a traceback, and the rate limit closes before the key is read |
+
+`tests/test_housekeeping.py` (11) pins both new rules, including the ones that
+must **not** fire: a fresh card still runs, a live session survives, a cooldown
+still in the future stays, and a key the pruner does not understand is left
+alone. 165 → **185 tests**. Live under supervisor since 08:11; the restart
+expired one job and dropped 25 rows on its first housekeeping pass.
+
+**The repo is on GitHub.** `git@github.com:Iqbolshoh/server-pult-bot.git` now
+exists and `main` is pushed, so §8's fourth open item is closed and CI runs on
+every push.
+
 **Deliberately not done, and why:**
 
 - **Phase 3 (licensing) and Phase 4 (distribution)** wait on §8. Both branch on
@@ -685,9 +707,9 @@ through before deciding the thing is trustworthy.
 ## 8. Open decisions for the owner
 
 > These now block the *only* remaining work. Phases 0–2 are done; Phase 3 and 4
-> cannot start until 1–3 below are answered. One more, new: **the GitHub remote
-> `git@github.com:Iqbolshoh/server-pult-bot.git` still does not exist** — the
-> repo has never been pushed, so CI has never run.
+> cannot start until 1–3 below are answered. *(The fourth item here — the missing
+> GitHub remote — was closed on 2026-09-01: the repo exists, `main` is pushed and
+> CI runs on every push.)*
 
 1. **Price and plan shape** — monthly per server? Lifetime with a year of
    updates? This decides how much Phase 3 has to build.

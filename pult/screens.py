@@ -12,7 +12,7 @@ import time
 import urllib.request
 
 from .core import (BASE_DIR, CONFIG_PATH, DB_PATH, ENV_PATH, RULE, START_TIME, THIN_RULE, bar,
-                   card, fmt_duration, fmt_tokens, fmt_when, h, quote, running_jobs, version)
+                   fmt_duration, fmt_tokens, fmt_when, h, quote, running_jobs, version)
 from .config import CFG, config_problems
 from .i18n import available_languages, current_language, language_name, t
 from .db import db, db_lock, meta_get

@@ -202,6 +202,7 @@
   "job.engine_error": "{banner} · ⚠️ <b>#{id}</b> the engine returned an error\n━━━━━━━━━━━━━━━━\n⏱ {elapsed}\n<blockquote>{detail}</blockquote>",
   "job.engine_missing": "{banner} · ❌ <b>#{id}</b> did not start\n━━━━━━━━━━━━━━━━\n<code>{binary}</code> is not installed here.\n<i>See /doctor.</i>",
   "job.execute_plan": "I approve the plan you made above — now carry it out in full.",
+  "job.expired": "⌛ <b>#{id}</b> expired\n<i>It waited {waited} unanswered and was dropped. Send it again if it still matters.</i>",
   "job.extra_file": "[One more file: {path}]",
   "job.failed": "{banner} · ❌ <b>#{id}</b> failed\n━━━━━━━━━━━━━━━━\n⏱ {elapsed}\n<pre>{detail}</pre>",
   "job.internal_error": "{banner} · ❌ <b>#{id}</b> internal error\n━━━━━━━━━━━━━━━━\n<pre>{error}</pre>",
