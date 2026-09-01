@@ -409,6 +409,16 @@ by tests rather than by discipline:
   asserts every tag is closed, only Telegram's tags are used, no `⟪missing.key⟫`
   survives, each screen carries its rule, and none is too long for one message.
 
+**2026-09-01 — One start-up notice per storm.** An unattended security upgrade
+made needrestart bounce `supervisor.service` four times in fifty seconds (zlib,
+openssl, bzip2, bind9 — one restart per apt batch), so the operator got four
+identical "the bot is up" cards at 11:37–11:38. The bot was healthy every time;
+the notice simply could not tell a restart it was ordered to make from one the
+package manager made behind its back. `maintenance.boot_notice()` now decides:
+a start inside `boot_notice_cooldown_sec` (900s) stays quiet unless the operator
+asked for it (`/restart`, `/update` call `request_boot_notice()`) or the start
+had to requeue an interrupted job. `tests/test_boot.py` pins all five cases.
+
 **Deliberately not done, and why:**
 
 - **Phase 3 (licensing) and Phase 4 (distribution)** wait on §8. Both branch on

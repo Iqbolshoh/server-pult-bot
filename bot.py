@@ -18,7 +18,7 @@ from pult.keyboards import main_reply_kb
 from pult.jobs import do_cancel, recover_interrupted_jobs, worker
 from pult.handlers import poller
 from pult.localapi import local_api_server
-from pult.maintenance import housekeeping
+from pult.maintenance import boot_notice, housekeeping
 
 # Command name -> locale key for its description. Published per language.
 BOT_COMMANDS = [
@@ -123,10 +123,8 @@ def main():
     log(f"starting {version()}, workdir={current_project()}, engines={ENGINE_ORDER}, "
         f"default={CFG['engine']}, lang={CFG['language']}, allowed={CFG['allowed_user_ids']}")
 
-    if CFG["notify_on_start"]:
-        note = t("boot.started")
-        if requeued:
-            note += " " + t("boot.requeued", count=requeued)
+    note = boot_notice(requeued)
+    if note:
         for uid in CFG["allowed_user_ids"]:
             send(uid, note, markup=main_reply_kb(), parse_mode="HTML")
 

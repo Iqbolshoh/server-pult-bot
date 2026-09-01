@@ -60,6 +60,10 @@ DEFAULT_CONFIG = {
     "progress_interval_sec": 15,
     "max_download_mb": 20,
     "notify_on_start": True,
+    # An apt security upgrade makes needrestart bounce supervisor once per
+    # batch, so the bot comes up four or five times in a row. Only the first
+    # start inside this window announces itself; see maintenance.boot_notice.
+    "boot_notice_cooldown_sec": 900,
     # Automatic failover. Off until the operator turns it on, because a hop
     # spends their *other* subscription.
     "fallback_enabled": False,

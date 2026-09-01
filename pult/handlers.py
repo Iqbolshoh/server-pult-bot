@@ -24,6 +24,7 @@ from .keyboards import (back_to_settings, doctor_menu, effort_menu, engine_menu,
 from .screens import (doctor_text, effort_text, engine_text, fallback_text, help_text,
                       history_text, jobs_text, language_text, limit_text, ls_text, model_text,
                       projects_text, server_text, settings_text, start_text, status_text)
+from .maintenance import request_boot_notice
 from .jobs import (append_to_job, approve_job, deliver_full_result, do_cancel, run_shell,
                    send_user_file, start_job)
 
@@ -362,6 +363,7 @@ def handle_command(chat_id, text):
     elif cmd == "/restart":
         # Supervisor restarts us (autorestart=true); a running job is requeued on start.
         send(chat_id, t("restart.notice"), parse_mode="HTML")
+        request_boot_notice()
         threading.Timer(2.0, lambda: (shutdown.set(), do_cancel())).start()
 
     else:
@@ -392,6 +394,7 @@ def do_update(chat_id):
         return
     send(chat_id, t("update.done", before=h(before), after=h(after),
                     output=h(output[-600:])), parse_mode="HTML")
+    request_boot_notice()
     # The new code is only live after a restart: the modules already loaded stay
     # in memory otherwise. Migrations run on the way back up.
     threading.Timer(2.0, lambda: (shutdown.set(), do_cancel())).start()
